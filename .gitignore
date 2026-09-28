@@ -1,0 +1,20 @@
+# Local environment and generated data
+.venv/
+__pycache__/
+*.py[cod]
+test-data/
+*.png
+!assets/
+!assets/*.png
+*.json
+*.log
+*.bak
+*.zip
+
+# Review drafts and captured previews
+REVIEW-*.md
+
+# Keep the LibreHardwareMonitor runtime, but not installers or debug symbols
+vendor/PawnIO_setup.exe
+vendor/lhm/*.exe
+vendor/lhm/*.pdb
