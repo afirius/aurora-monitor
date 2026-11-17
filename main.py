@@ -28,6 +28,8 @@ from renderer import render, speed, value, Painter, hardware_badge, short_model,
 from mac_widgets import (PillButton, SidebarButton, RoundedPanel, SlimScrollbar,
                          SmoothScale, ToggleSwitch, SelectField, StepperField, TextField)
 from app_icon import ICON_ICO, icon_image
+from autostart import is_elevated, sync as sync_autostart
+from resources import resource_root
 from telemetry import Telemetry
 from weather import WeatherService
 
@@ -61,7 +63,7 @@ DEFAULTS = dict(
     rotation=90, brightness=100, night_brightness=18, night_mode=True,
     night_start=23, night_end=8, auto_pages=False, context_auto=True, page_seconds=20,
     port="AUTO", usb_enabled=True, cpu_alert=90, gpu_alert=85,
-    page="overview", theme="auto", brand_name="Мой компьютер",
+    page="overview", theme="auto", brand_name="Мой компьютер", autostart=True,
 )
 BG = UI_PALETTES["night"]["bg"]
 PANEL = UI_PALETTES["night"]["panel"]
@@ -134,7 +136,8 @@ def load_settings(path: Path) -> dict:
             settings[key] = DEFAULTS[key]
     if settings["rotation"] not in (0, 90, 180, 270):
         settings["rotation"] = 90
-    for key in ("night_mode", "auto_pages", "context_auto", "usb_enabled"):
+    for key in ("night_mode", "auto_pages", "context_auto", "usb_enabled",
+                "autostart"):
         if not isinstance(settings[key], bool):
             settings[key] = DEFAULTS[key]
     for key, low, high in (("latitude", -90, 90), ("longitude", -180, 180)):
@@ -194,23 +197,27 @@ def start_sensor_host(output: Path) -> bool:
     try:
         import ctypes
 
-        pythonw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
-        if not pythonw.is_file():
-            pythonw = Path(sys.executable).with_name("pythonw.exe")
-        if not pythonw.is_file():
-            raise FileNotFoundError("pythonw.exe не найден")
-        created = psutil.Process(os.getpid()).create_time()
-        parameters = subprocess.list2cmdline([
-            str(ROOT / "sensor_host.py"), "--output", str(output),
-            "--parent-pid", str(os.getpid()), "--parent-created", repr(created),
-        ])
+        common = ["--output", str(output),
+                  "--parent-pid", str(os.getpid()),
+                  "--parent-created", repr(psutil.Process(os.getpid()).create_time())]
+        if getattr(sys, "frozen", False):
+            executable = Path(sys.executable)
+            arguments = ["--sensor-host", *common]
+        else:
+            executable = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+            if not executable.is_file():
+                executable = Path(sys.executable).with_name("pythonw.exe")
+            if not executable.is_file():
+                raise FileNotFoundError("pythonw.exe не найден")
+            arguments = [str(ROOT / "sensor_host.py"), *common]
+        parameters = subprocess.list2cmdline(arguments)
         shell = ctypes.WinDLL("shell32", use_last_error=True)
         shell.ShellExecuteW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
                                        ctypes.c_wchar_p, ctypes.c_wchar_p,
                                        ctypes.c_wchar_p, ctypes.c_int]
         shell.ShellExecuteW.restype = ctypes.c_void_p
-        result = shell.ShellExecuteW(None, "runas", str(pythonw), parameters,
-                                     str(ROOT), 0)
+        result = shell.ShellExecuteW(None, "runas", str(executable), parameters,
+                                     str(executable.parent), 0)
         if not result or result <= 32:
             logging.warning("Помощник датчиков не запущен (код ShellExecute %s)", result)
             return False
@@ -262,7 +269,13 @@ class App:
         self.last_brightness = brightness
         self.build_ui()
         self._sensor_host_started = False
+        self.autostart_backend = None
         if not args.preview:
+            self.apply_autostart()
+        # A normal launch may ask for elevation.  A logon launch through the
+        # Run-key fallback must stay silent, so the helper is started only when
+        # the process is already elevated in that case.
+        if not args.preview and (not args.autostart or is_elevated()):
             self._sensor_host_started = start_sensor_host(DATA / "hardware.json")
         if self.settings["usb_enabled"] and not args.preview:
             self.display.start()
@@ -278,6 +291,18 @@ class App:
         self.root.bind("<Escape>", lambda event: self.hide())
         self.start_tray()
         self.root.after(100, self.tick)
+
+    def apply_autostart(self) -> bool:
+        """Keep Windows startup registration in sync with the saved setting."""
+        ok, error, backend = sync_autostart(self.settings["autostart"])
+        self.autostart_backend = backend
+        if ok:
+            logging.info("Автозапуск: %s (способ: %s)",
+                         "включён" if self.settings["autostart"] else "выключен",
+                         backend)
+        else:
+            logging.warning("Автозапуск не изменён: %s", error)
+        return ok
 
     def _watch_show_event(self) -> None:
         import ctypes
@@ -964,7 +989,7 @@ class App:
                         self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2))
         y = max(10, min(screen_height - height - 10,
                         self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2))
-        tab_heights = {"Экран": height, "Автоматика": min(height, 550),
+        tab_heights = {"Экран": height, "Автоматика": min(height, 640),
                        "Погода": min(height, 510),
                        "Датчики и пороги": min(height, 620)}
         geometry = f"{width}x{height}+{x}+{y}"
@@ -1082,6 +1107,7 @@ class App:
         context_auto = tk.BooleanVar(value=self.settings["context_auto"])
         auto_pages = tk.BooleanVar(value=self.settings["auto_pages"])
         usb_enabled = tk.BooleanVar(value=self.settings["usb_enabled"])
+        autostart = tk.BooleanVar(value=self.settings["autostart"])
         night_start = tk.StringVar(value=str(self.settings["night_start"]))
         night_end = tk.StringVar(value=str(self.settings["night_end"]))
         page_seconds = tk.StringVar(value=str(self.settings["page_seconds"]))
@@ -1165,6 +1191,14 @@ class App:
                      palette=palette).pack(side="right", padx=(0, 12))
         tk.Label(automation_page, text="Интервал в секундах", bg=PANEL, fg=MUTED,
                  font=("Segoe UI", 9), anchor="e").pack(fill="x", padx=78)
+
+        heading(automation_page, "Запуск при входе в систему")
+        switch_row(automation_page, "Запускать АВРОРУ автоматически", autostart, 5)
+        tk.Label(automation_page,
+                 text="При входе в Windows монитор запустится скрыто в трее и сразу "
+                      "начнёт передавать кадры на USB-экран.",
+                 bg=PANEL, fg=MUTED, font=("Segoe UI", 10), anchor="w",
+                 justify="left", wraplength=440).pack(fill="x", padx=18, pady=(4, 13))
 
         heading(automation_page, "Подключение")
         switch_row(automation_page, "Передавать кадр на USB-экран", usb_enabled, 5)
@@ -1271,6 +1305,7 @@ class App:
                     context_auto=context_auto.get(),
                     page_seconds=max(5, min(300, int(page_seconds.get()))),
                     port=port.get().strip(), usb_enabled=usb_enabled.get(),
+                    autostart=autostart.get(),
                     cpu_alert=max(50, min(110, int(cpu_alert.get()))),
                     gpu_alert=max(50, min(110, int(gpu_alert.get()))),
                 )
@@ -1292,6 +1327,11 @@ class App:
             win.destroy()
             self.apply_theme(effective_theme(self.settings))
             self._apply_brand()
+            if not self.apply_autostart():
+                messagebox.showwarning(
+                    self.settings["brand_name"],
+                    "Настройка сохранена, но автозапуск Windows не изменён.\n"
+                    "Подробности записаны в журнал AuroraMonitor.")
             if selected:
                 self.weather.set_location(city["name"], city["latitude"], city["longitude"])
                 threading.Thread(target=self.weather.refresh, daemon=True).start()
@@ -1351,7 +1391,7 @@ class App:
         self.root.destroy()
 
 
-def _windows_instance_handles() -> tuple[object | None, int | None, int | None, bool]:
+def _windows_instance_handles(quiet: bool = False) -> tuple[object | None, int | None, int | None, bool]:
     """Create the singleton mutex and a show-window event shared by launches."""
     if os.name != "nt":
         return None, None, None, False
@@ -1374,9 +1414,9 @@ def _windows_instance_handles() -> tuple[object | None, int | None, int | None, 
     mutex = kernel.CreateMutexW(None, False, "Local\\AuroraMonitor")
     already_running = ctypes.get_last_error() == 183
     if already_running:
-        if event:
+        if event and not quiet:
             kernel.SetEvent(event)
-        if not event_existed:
+        if not quiet and not event_existed:
             # A previous Aurora build may hold the mutex without watching the
             # show event. Explain how to expose that still-running instance.
             brand = load_settings(DATA / "settings.json")["brand_name"]
@@ -1392,11 +1432,21 @@ def _windows_instance_handles() -> tuple[object | None, int | None, int | None, 
 
 def main() -> None:
     global DATA
+    argv = sys.argv[1:]
+    if "--sensor-host" in argv:
+        from sensor_host import main as sensor_main
+
+        sensor_main([argument for argument in argv if argument != "--sensor-host"])
+        return
     parser = argparse.ArgumentParser(description="Монитор компьютера и USB-экрана")
     parser.add_argument("--preview", action="store_true", help="Предпросмотр без USB")
     parser.add_argument("--data-dir", type=Path, help="Каталог настроек и журналов")
     parser.add_argument("--snapshot", type=Path, help="Сохранить кадр и выйти без USB")
+    parser.add_argument("--diagnose", type=Path,
+                        help="Записать сведения о программе и медиасессии в JSON")
     parser.add_argument("--shutdown", action="store_true", help="Завершить работающий монитор после передачи кадра")
+    parser.add_argument("--autostart", action="store_true",
+                        help="Скрытый запуск при входе в Windows")
     args = parser.parse_args()
     if args.data_dir:
         DATA = args.data_dir
@@ -1410,6 +1460,33 @@ def main() -> None:
                                       backupCount=2, encoding="utf-8")],
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    if args.autostart and not load_settings(DATA / "settings.json")["autostart"]:
+        logging.info("Автозапуск отключён в настройках; выход")
+        # If this launch came from the elevated task, remove it so a disabled
+        # autostart does not keep starting a short-lived process at every logon.
+        sync_autostart(False)
+        return
+    if args.diagnose:
+        import asyncio
+
+        report = {
+            "version": "0.4",
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "elevated": is_elevated(),
+            "resource_root": str(resource_root()),
+        }
+        try:
+            from media import _read_media_once
+
+            media = asyncio.run(_read_media_once())
+            media.pop("thumbnail_bytes", None)
+            report["media"] = media
+        except Exception as exc:
+            report["media_error"] = f"{type(exc).__name__}: {exc}"
+        args.diagnose.parent.mkdir(parents=True, exist_ok=True)
+        args.diagnose.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+        return
     if args.snapshot:
         telemetry = Telemetry(hardware_path=DATA / "hardware.json")
         telemetry.sample()
@@ -1433,12 +1510,15 @@ def main() -> None:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
             pass
-    kernel, mutex, event, already_running = _windows_instance_handles()
+    kernel, mutex, event, already_running = _windows_instance_handles(
+        quiet=args.autostart)
     if already_running:
         return
     try:
-        logging.info("Запуск АВРОРЫ 0.3")
+        logging.info("Запуск АВРОРЫ 0.4")
         root = tk.Tk()
+        if args.autostart:
+            root.withdraw()
         (DATA / 'shutdown.request').unlink(missing_ok=True)
         app = App(root, args, event)
         try:

@@ -3,6 +3,8 @@
 __pycache__/
 *.py[cod]
 test-data/
+build/
+dist/
 *.png
 !assets/
 !assets/*.png

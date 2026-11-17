@@ -131,6 +131,15 @@ class AppTests(unittest.TestCase):
         cfg['night_mode']=False
         self.assertEqual(effective_brightness(cfg,1),100)
 
+    def test_autostart_defaults_on_and_recovers_from_invalid_type(self):
+        self.assertIs(DEFAULTS["autostart"], True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"autostart":"yes"}', encoding="utf-8")
+            self.assertIs(load_settings(path)["autostart"], True)
+            path.write_text('{"autostart":false}', encoding="utf-8")
+            self.assertIs(load_settings(path)["autostart"], False)
+
     def test_automatic_theme_tracks_night_schedule_but_manual_modes_do_not(self):
         cfg=DEFAULTS.copy()
         self.assertEqual(cfg['theme'],'auto')

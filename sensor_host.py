@@ -13,6 +13,8 @@ import time
 
 import psutil
 
+from resources import resource_path
+
 
 def read_memory_modules():
     """Query SMBIOS once while elevated; the desktop cannot access this WMI class."""
@@ -55,13 +57,13 @@ def save(path, sensors, memory_modules, parent_pid=0, error=None):
             time.sleep(.05)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--parent-pid', type=int, default=0)
     parser.add_argument('--parent-created', type=float, default=0)
     parser.add_argument('--once', action='store_true')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.once and (args.parent_pid <= 0 or args.parent_created <= 0):
         parser.error('A live parent is required')
     def parent_alive():
@@ -89,7 +91,7 @@ def main():
             if mutex_handle:
                 kernel.CloseHandle(mutex_handle)
             return
-    folder = Path(__file__).resolve().parent / 'vendor' / 'lhm'
+    folder = resource_path('vendor', 'lhm')
     sys.path.insert(0, str(folder))
     pc = None
     try:

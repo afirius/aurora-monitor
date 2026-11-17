@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
 from PIL import Image
 
+from resources import resource_path
 
-ICON_PNG = Path(__file__).resolve().parent / "assets" / "aurora-icon.png"
+
+ICON_PNG = resource_path("assets", "aurora-icon.png")
 ICON_ICO = ICON_PNG.with_suffix(".ico")
 
 
