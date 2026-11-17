@@ -366,14 +366,22 @@ def overview(p,m,weather,landscape,overview_content=None):
     installed=number(m.get('ram_installed_gb'))
     capacity=value(installed if installed is not None else m.get('ram_total_gb'))
     used=value(m.get('ram_used_gb'),digits=1).replace('.',',')
+    ram_temp=number(m.get('ram_temp'))
+    if ram_temp is not None and not 0 < ram_temp <= 110:
+        ram_temp=None
+    temp_reserve=40 if ram_temp is not None else 0
     memory_label=f"{capacity} ГБ {ram_type}"+(f" {mt:.0f} МГц" if mt else '')
     label_size=21
-    while label_size>16 and p.measure(memory_label,label_size,True)>w-78:label_size-=1
+    while label_size>16 and p.measure(memory_label,label_size,True)>w-78-temp_reserve:label_size-=1
     if landscape:
         label_size=min(label_size,14)
-        p.fit(58,ry+14,memory_label,250,label_size,p.c['text'],True,'lm')
+        p.fit(58,ry+14,memory_label,250-temp_reserve,label_size,p.c['text'],True,'lm')
     else:
-        p.fit(58,ry+23,memory_label,w-78,label_size,p.c['text'],True,'lm')
+        p.fit(58,ry+23,memory_label,w-78-temp_reserve,label_size,p.c['text'],True,'lm')
+    if ram_temp is not None:
+        temp_color=p.c['memory'] if ram_temp<60 else p.c['warm']
+        p.text(w-20,ry+(14 if landscape else 23),f"{ram_temp:.0f}°C",
+               12 if landscape else 13,temp_color,True,'rm')
     memory_baseline=ry+(50 if landscape else 79)
     used_size=24 if landscape else 32
     used_x=58 if landscape else 20

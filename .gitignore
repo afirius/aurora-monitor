@@ -16,7 +16,6 @@ dist/
 # Review drafts and captured previews
 REVIEW-*.md
 
-# Keep the LibreHardwareMonitor runtime, but not installers or debug symbols
-vendor/PawnIO_setup.exe
+# Keep the LibreHardwareMonitor runtime, but not debug symbols or its GUI
 vendor/lhm/*.exe
 vendor/lhm/*.pdb

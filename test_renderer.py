@@ -27,6 +27,21 @@ class RendererTests(unittest.TestCase):
         self.assertTrue(any(text == '87' and size >= 32 for text, size, _, _ in calls))
         self.assertTrue(any(text == '%' and y > 200 for text, _, _, y in calls))
 
+    def test_memory_temperature_badge_is_optional(self):
+        calls = []
+        original = Painter.text
+        def record(painter, x, y, text, size=18, *args, **kwargs):
+            calls.append(str(text))
+            return original(painter, x, y, text, size, *args, **kwargs)
+        with patch.object(Painter, 'text', record):
+            render({'ram_used_gb': 16, 'ram_total_gb': 32,
+                    'ram_temp': 42}, {}, {})
+        self.assertIn('42°C', calls)
+        calls.clear()
+        with patch.object(Painter, 'text', record):
+            render({'ram_used_gb': 16, 'ram_total_gb': 32}, {}, {})
+        self.assertFalse(any('°C' in text for text in calls))
+
     def test_essential_readings_stay_in_bounds_at_extremes(self):
         original = Painter.text
         bounds = []
@@ -38,7 +53,8 @@ class RendererTests(unittest.TestCase):
             return original(painter, x, y, text, size, color, bold, anchor)
         metrics = dict(cpu_percent=100, gpu_percent=100, ram_percent=100,
                        cpu_temp=110, gpu_temp=110, ram_used_gb=256,
-                       ram_total_gb=256, fps=999, frametime_ms=100.5,
+                       ram_total_gb=256, ram_temp=109,
+                       fps=999, frametime_ms=100.5,
                        process_name='Очень длинное название процесса игры.exe')
         weather = dict(city='Очень длинное название населённого пункта',
                        temperature=-40, feels_like=-48, wind_kmh=120,

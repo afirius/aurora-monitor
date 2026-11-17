@@ -103,6 +103,9 @@ def main(argv=None):
         pc.IsCpuEnabled = True
         pc.IsMotherboardEnabled = True
         pc.IsGpuEnabled = True
+        # DDR5 SPD hubs expose their thermal sensor over SMBus.  Enabling the
+        # memory group makes LHM publish DIMM temperatures alongside SMBIOS data.
+        pc.IsMemoryEnabled = True
         pc.Open()
         def collect(hw, rows):
             hw.Update()

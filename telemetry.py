@@ -152,8 +152,10 @@ def _select_lhm_sensors(sensors: list[dict[str, Any]],
     readings: dict[str, Any] = dict(cpu_temp=None, cpu_fan_rpm=None,
                                     gpu_fan_rpm=None, pump_fan_rpm=None,
                                     case_fan_rpm=None, cpu_mhz=None,
-                                    cpu_effective_mhz=None, fan_candidates=[])
+                                    cpu_effective_mhz=None, fan_candidates=[],
+                                    ram_temp=None, ram_temps=[])
     temperatures: list[tuple[int, float]] = []
+    dimm_temperatures: list[tuple[str, float]] = []
     cpu_fans: list[tuple[int, float]] = []
     gpu_fans: list[tuple[int, float]] = []
     pump_fans: list[float] = []
@@ -178,6 +180,30 @@ def _select_lhm_sensors(sensors: list[dict[str, Any]],
                 elif lowered == "cores (average effective)":
                     readings["cpu_effective_mhz"] = value
         if sensor_type == "temperature":
+            hardware_type = str(sensor.get("HardwareType") or "").strip().lower()
+            is_dimm = (
+                (hardware_type == "memory" and
+                 not any(marker in lowered_id for marker in ("/vram", "/ram"))) or
+                any(marker in lowered_id for marker in ("/dimm/", "/memory/", "/spd/"))
+            )
+            if is_dimm:
+                # DDR5 SPD hubs publish the actual DIMM temperature as
+                # "DIMM #N" and also expose resolution/limit fields with the
+                # same SensorType.  Only the former are real temperatures.
+                lowered_name = name.lower()
+                if any(marker in lowered_name for marker in
+                       ("limit", "resolution", "critical")):
+                    continue
+                if not (lowered_name.startswith("dimm") or "dimm" in lowered_name or
+                        lowered_name in {"temperature", "memory temperature",
+                                         "spd hub temperature"}):
+                    continue
+                label = name if "dimm" in lowered_name else (parent or name or "DIMM")
+                # Values outside this range are placeholders or a failed
+                # SMBus transaction, not real readings.
+                if 0 < value <= 110:
+                    dimm_temperatures.append((label, value))
+                continue
             is_cpu = any(marker in lowered_id for marker in ("/amdcpu/", "/intelcpu/", "/cpu/"))
             if not is_cpu:
                 continue
@@ -218,6 +244,12 @@ def _select_lhm_sensors(sensors: list[dict[str, Any]],
     readings["gpu_fan_rpm"] = gpu_fans[0][1] if gpu_fans else None
     readings["pump_fan_rpm"] = pump_fans[0] if pump_fans else None
     readings["case_fan_rpm"] = case_fans[0] if case_fans else None
+    grouped: dict[str, float] = {}
+    for dimm_name, value in dimm_temperatures:
+        grouped[dimm_name] = max(value, grouped.get(dimm_name, value))
+    readings["ram_temps"] = [{"name": name, "value": value}
+                             for name, value in sorted(grouped.items())]
+    readings["ram_temp"] = max(grouped.values()) if grouped else None
     return readings
 
 
@@ -387,6 +419,8 @@ class Telemetry:
         self._sensor_cpu_mhz: float | None = None
         self._cpu_effective_mhz: float | None = None
         self._fan_candidates: list[dict[str, Any]] = []
+        self._ram_temp: float | None = None
+        self._ram_temps: list[dict[str, Any]] = []
         self._memory_modules: dict[str, Any] = _parse_memory_modules("")
         self._memory_probe_started = False
         self._gpu_status = "unavailable" if not self._nvidia_smi else "pending"
@@ -469,6 +503,8 @@ class Telemetry:
             self._sensor_cpu_mhz = readings["cpu_mhz"]
             self._cpu_effective_mhz = readings["cpu_effective_mhz"]
             self._fan_candidates = readings["fan_candidates"]
+            self._ram_temp = readings["ram_temp"]
+            self._ram_temps = readings["ram_temps"]
             if readings["cpu_temp"] is not None or readings["cpu_fan_rpm"] is not None:
                 self._sensor_status = "ok"
                 self._sensor_hint = None
@@ -566,6 +602,8 @@ class Telemetry:
             ram_used_gb=(memory.total - memory.available) / gib if memory else None,
             ram_total_gb=memory.total / gib if memory else None,
             ram_percent=memory.percent if memory else None,
+            ram_temp=None,
+            ram_temps=[],
             disk_used_gb=disk.used / gib if disk else None,
             disk_total_gb=disk.total / gib if disk else None,
             disk_percent=disk.percent if disk else None,
@@ -601,6 +639,8 @@ class Telemetry:
             snapshot["case_fan_rpm"] = self._case_fan_rpm
             snapshot["cpu_effective_mhz"] = self._cpu_effective_mhz
             snapshot["fan_candidates"] = list(self._fan_candidates)
+            snapshot["ram_temp"] = self._ram_temp
+            snapshot["ram_temps"] = [dict(item) for item in self._ram_temps]
             if self._sensor_cpu_mhz is not None:
                 snapshot["cpu_mhz"] = self._sensor_cpu_mhz
             snapshot.update(self._memory_modules)
@@ -614,7 +654,8 @@ class Telemetry:
                 snapshot.update(memory_from_helper)
             for field in ("cpu_temp", "cpu_fan_rpm", "gpu_fan_rpm",
                           "pump_fan_rpm", "case_fan_rpm", "cpu_effective_mhz",
-                          "fan_candidates", "helper_age_seconds", "helper_error"):
+                          "fan_candidates", "ram_temp", "ram_temps",
+                          "helper_age_seconds", "helper_error"):
                 snapshot[field] = helper[field]
             if helper["cpu_mhz"] is not None:
                 snapshot["cpu_mhz"] = helper["cpu_mhz"]

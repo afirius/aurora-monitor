@@ -78,6 +78,44 @@ class ParsingTests(unittest.TestCase):
         ])
         self.assertIsNone(parsed["cpu_temp"])
 
+    def test_dimm_temperatures_are_selected_and_generic_memory_is_ignored(self) -> None:
+        sensors = [
+            {"Name": "DIMM 0", "Identifier": "/dimm/0/temperature/0",
+             "SensorType": "Temperature", "Value": 41.5,
+             "HardwareName": "DIMM 0", "HardwareType": "Memory"},
+            {"Name": "DIMM 1", "Identifier": "/dimm/1/temperature/0",
+             "SensorType": "Temperature", "Value": 44,
+             "HardwareName": "DIMM 1", "HardwareType": "Memory"},
+            {"Name": "Virtual Memory", "Identifier": "/vram",
+             "SensorType": "Temperature", "Value": 60,
+             "HardwareName": "Virtual Memory", "HardwareType": "Memory"},
+            {"Name": "Temperature", "Identifier": "/memory/0/temperature/0",
+             "SensorType": "Temperature", "Value": 43,
+             "HardwareName": "SPD Hub", "HardwareType": "Memory"},
+            {"Name": "Temperature Sensor Resolution",
+             "Identifier": "/memory/dimm/0/temperature/1",
+             "SensorType": "Temperature", "Value": 0.25,
+             "HardwareName": "G Skill Intl - F5-5600J4040D48G (#0)",
+             "HardwareType": "Memory"},
+            {"Name": "Thermal Sensor High Limit",
+             "Identifier": "/memory/dimm/0/temperature/3",
+             "SensorType": "Temperature", "Value": 85,
+             "HardwareName": "G Skill Intl - F5-5600J4040D48G (#0)",
+             "HardwareType": "Memory"},
+        ]
+        parsed = telemetry._select_lhm_sensors(sensors)
+        self.assertEqual(parsed["ram_temp"], 44)
+        self.assertEqual(parsed["ram_temps"], [
+            {"name": "DIMM 0", "value": 41.5},
+            {"name": "DIMM 1", "value": 44},
+            {"name": "SPD Hub", "value": 43},
+        ])
+        self.assertIsNone(telemetry._select_lhm_sensors([
+            {"Name": "Virtual Memory", "Identifier": "/vram",
+             "SensorType": "Temperature", "Value": 60,
+             "HardwareName": "Virtual Memory", "HardwareType": "Memory"},
+        ])["ram_temp"])
+
     def test_smbios_memory_uses_configured_data_rate(self) -> None:
         modules = [{"Capacity": 16 * 1024 ** 3, "ConfiguredClockSpeed": 6000,
                     "Speed": 4800, "SMBIOSMemoryType": 34, "PartNumber": "KF560C40-16"}] * 2

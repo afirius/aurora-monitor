@@ -797,6 +797,7 @@ class App:
             for key in ("cpu_percent", "cpu_temp", "cpu_mhz", "gpu_percent",
                         "gpu_temp", "gpu_memory_used_mb", "gpu_power_w",
                         "gpu_clock_mhz", "ram_used_gb", "ram_percent",
+                        "ram_temp",
                         "disk_used_gb", "disk_percent", "net_down_bps",
                         "net_up_bps", "fan_rpm", "cpu_fan_rpm", "gpu_fan_rpm",
                         "pump_fan_rpm", "case_fan_rpm", "cpu_effective_mhz",
@@ -804,6 +805,7 @@ class App:
                         "frametime_ms"):
                 metrics[key] = None
             metrics["fan_candidates"] = []
+            metrics["ram_temps"] = []
             metrics["game_detected"] = False
         return metrics, stale
 
@@ -906,6 +908,14 @@ class App:
             memory_lines.append(
                 f"Модулей: {value(metrics.get('ram_module_count'))}"
                 + (f"  ·  {metrics['ram_model']}" if metrics.get("ram_model") else ""))
+        dimm_temps = [item.get("value") for item in (metrics.get("ram_temps") or [])
+                      if isinstance(item, dict) and isinstance(item.get("value"), (int, float))]
+        if dimm_temps:
+            if len(dimm_temps) <= 2:
+                readings_text = " / ".join(f"{temp:.0f}°C" for temp in dimm_temps)
+            else:
+                readings_text = f"макс. {max(dimm_temps):.0f}°C"
+            memory_lines.append(f"Температура ОЗУ: {readings_text}")
         self.memory_amount_label.configure(text="\n".join(memory_lines))
         cpu_name=metrics.get('cpu_name')
         gpu_name=metrics.get('gpu_name')
@@ -1447,6 +1457,10 @@ def main() -> None:
     parser.add_argument("--shutdown", action="store_true", help="Завершить работающий монитор после передачи кадра")
     parser.add_argument("--autostart", action="store_true",
                         help="Скрытый запуск при входе в Windows")
+    parser.add_argument("--install-autostart", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--disable-autostart", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.data_dir:
         DATA = args.data_dir
@@ -1460,6 +1474,15 @@ def main() -> None:
                                       backupCount=2, encoding="utf-8")],
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    if args.install_autostart or args.disable_autostart:
+        enabled = bool(args.install_autostart)
+        settings = load_settings(DATA / "settings.json")
+        settings["autostart"] = enabled
+        save_json(DATA / "settings.json", settings)
+        ok, error, backend = sync_autostart(enabled)
+        logging.info("Автозапуск %s: backend=%s error=%s",
+                     "включён" if enabled else "выключен", backend, error or "-")
+        raise SystemExit(0 if ok else 1)
     if args.autostart and not load_settings(DATA / "settings.json")["autostart"]:
         logging.info("Автозапуск отключён в настройках; выход")
         # If this launch came from the elevated task, remove it so a disabled
