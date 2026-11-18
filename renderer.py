@@ -369,24 +369,36 @@ def overview(p,m,weather,landscape,overview_content=None):
     ram_temp=number(m.get('ram_temp'))
     if ram_temp is not None and not 0 < ram_temp <= 110:
         ram_temp=None
-    temp_reserve=40 if ram_temp is not None else 0
     memory_label=f"{capacity} ГБ {ram_type}"+(f" {mt:.0f} МГц" if mt else '')
     label_size=21
-    while label_size>16 and p.measure(memory_label,label_size,True)>w-78-temp_reserve:label_size-=1
+    while label_size>16 and p.measure(memory_label,label_size,True)>w-78:label_size-=1
     if landscape:
         label_size=min(label_size,14)
-        p.fit(58,ry+14,memory_label,250-temp_reserve,label_size,p.c['text'],True,'lm')
+        p.fit(58,ry+14,memory_label,250,label_size,p.c['text'],True,'lm')
     else:
-        p.fit(58,ry+23,memory_label,w-78-temp_reserve,label_size,p.c['text'],True,'lm')
-    if ram_temp is not None:
-        temp_color=p.c['memory'] if ram_temp<60 else p.c['warm']
-        p.text(w-20,ry+(14 if landscape else 23),f"{ram_temp:.0f}°C",
-               12 if landscape else 13,temp_color,True,'rm')
+        p.fit(58,ry+23,memory_label,w-78,label_size,p.c['text'],True,'lm')
     memory_baseline=ry+(50 if landscape else 79)
     used_size=24 if landscape else 32
     used_x=58 if landscape else 20
     p.text(used_x,memory_baseline,used,used_size,p.c['text'],True,'ls')
-    p.text(used_x+4+p.measure(used,used_size,True),memory_baseline,'ГБ',15 if landscape else 17,p.c['muted'],anchor='ls')
+    used_unit_size=15 if landscape else 17
+    used_unit_x=used_x+4+p.measure(used,used_size,True)
+    p.text(used_unit_x,memory_baseline,'ГБ',used_unit_size,p.c['muted'],anchor='ls')
+    if ram_temp is not None:
+        # Same temperature group as the CPU/GPU cards: icon left, reading right, bottom row.
+        heat=temperature_color(p,ram_temp)
+        temperature=value(ram_temp,'°')
+        temp_size=20 if landscape else 22
+        temp_width=18+p.measure(temperature,temp_size,True)
+        percent=value(m.get('ram_percent'))
+        percent_unit=p.measure('%',21,True) if number(m.get('ram_percent')) is not None else 0
+        percent_left=w-20-percent_unit-3-p.measure(percent,32,True)
+        temp_x=(285-temp_width/2) if landscape else (150-temp_width/2)
+        used_end=used_unit_x+p.measure('ГБ',used_unit_size,True)
+        temp_x=max(used_end+8,temp_x)
+        temp_x=min(temp_x,percent_left-8-temp_width)
+        hardware_icon(p,temp_x,memory_baseline-17,'temp',heat,18)
+        p.text(temp_x+18,memory_baseline,temperature,temp_size,heat,True,'ls')
     percent_right(memory_baseline,'ram_percent',32,baseline=True)
     p.bar(20,ry+rh-(5 if landscape else 12),w-40,m.get('ram_percent'),p.c['memory'],4)
     card_box=(8,274,w-8,312) if landscape else (8,375,w-8,472)

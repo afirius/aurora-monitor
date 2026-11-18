@@ -27,18 +27,39 @@ class RendererTests(unittest.TestCase):
         self.assertTrue(any(text == '87' and size >= 32 for text, size, _, _ in calls))
         self.assertTrue(any(text == '%' and y > 200 for text, _, _, y in calls))
 
-    def test_memory_temperature_badge_is_optional(self):
+    def test_memory_temperature_matches_the_cpu_and_gpu_group(self):
+        for rotation in (0, 90):
+            with self.subTest(rotation=rotation):
+                calls = []
+                icons = []
+                original = Painter.text
+                def record(painter, x, y, text, size=18, *args, **kwargs):
+                    calls.append((str(text), size, x, y, args[0] if args else None))
+                    return original(painter, x, y, text, size, *args, **kwargs)
+                def record_icon(painter, x, y, kind, color, size=40):
+                    icons.append((x, y, kind, color, size))
+                with patch.object(Painter, 'text', record), \
+                     patch('renderer.hardware_icon', record_icon):
+                    render(dict(cpu_temp=65, gpu_temp=41, ram_used_gb=16,
+                                ram_total_gb=32, ram_percent=50, ram_temp=42),
+                           {}, {}, rotation=rotation)
+                ram_temp = next(call for call in calls if call[0] == '42°')
+                gpu_temp = next(call for call in calls if call[0] == '41°')
+                self.assertEqual(ram_temp[1], gpu_temp[1])
+                self.assertEqual(ram_temp[4], gpu_temp[4])
+                self.assertFalse(any(text.endswith('°C') for text, *_ in calls))
+                icon = next(icon for icon in icons
+                            if icon[2] == 'temp' and icon[1] > 220
+                            and icon[0] + 18 == ram_temp[2])
+                self.assertEqual(icon[1], 327 if rotation == 0 else 242)
+                self.assertLessEqual(abs(ram_temp[2] - gpu_temp[2]), 2)
+                self.assertGreater(ram_temp[3], 300 if rotation == 0 else 220)
         calls = []
         original = Painter.text
-        def record(painter, x, y, text, size=18, *args, **kwargs):
+        def record_absent(painter, x, y, text, *args, **kwargs):
             calls.append(str(text))
-            return original(painter, x, y, text, size, *args, **kwargs)
-        with patch.object(Painter, 'text', record):
-            render({'ram_used_gb': 16, 'ram_total_gb': 32,
-                    'ram_temp': 42}, {}, {})
-        self.assertIn('42°C', calls)
-        calls.clear()
-        with patch.object(Painter, 'text', record):
+            return original(painter, x, y, text, *args, **kwargs)
+        with patch.object(Painter, 'text', record_absent):
             render({'ram_used_gb': 16, 'ram_total_gb': 32}, {}, {})
         self.assertFalse(any('°C' in text for text in calls))
 

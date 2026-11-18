@@ -1493,7 +1493,7 @@ def main() -> None:
         import asyncio
 
         report = {
-            "version": "0.4",
+            "version": "0.4.1",
             "frozen": bool(getattr(sys, "frozen", False)),
             "elevated": is_elevated(),
             "resource_root": str(resource_root()),
@@ -1538,7 +1538,7 @@ def main() -> None:
     if already_running:
         return
     try:
-        logging.info("Запуск АВРОРЫ 0.4")
+        logging.info("Запуск АВРОРЫ 0.4.1")
         root = tk.Tk()
         if args.autostart:
             root.withdraw()

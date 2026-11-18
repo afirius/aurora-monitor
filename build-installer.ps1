@@ -6,7 +6,7 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
-$version = '0.4.0'
+$version = '0.4.1'
 
 if (-not $SkipBuild) {
     & (Join-Path $root 'build.ps1') -Clean:$Clean
