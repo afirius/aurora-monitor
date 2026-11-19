@@ -118,7 +118,7 @@ class Painter:
         if points:
             px,py=points[-1];self.ellipse((px-3,py-3,px+3,py+3),color)
 
-    def weather_icon(self,x,y,code,size=64,is_day=True):
+    def weather_icon(self,x,y,code,size=64,is_day=True,phase=None):
         s=size/64
         def box(a,b,c,d):return (x+a*s,y+b*s,x+c*s,y+d*s)
         def line(points,color,width=2):self.line([(x+a*s,y+b*s) for a,b in points],color,width*s)
@@ -128,10 +128,16 @@ class Painter:
             self.ellipse(box(9,9,55,55),outline=self.c['muted'],width=2*s)
             self.text(x+size/2,y+size*.22,'?',round(size*.5),self.c['muted'],True,'mt');return
         code=int(code)
+        motion=number(phase);animate=motion is not None;t=motion or 0.0
+        def sway(rate,offset=0.0,amount=1.0):
+            return amount*math.sin(t*rate+offset) if animate else 0.0
         def sun(cx=32,cy=29,r=13):
             self.ellipse(box(cx-r,cy-r,cx+r,cy+r),warm)
-            for a in range(0,360,45):
-                t=math.radians(a);line([(cx+(r+5)*math.cos(t),cy+(r+5)*math.sin(t)),(cx+(r+10)*math.cos(t),cy+(r+10)*math.sin(t))],warm,2)
+            sweep=t*18 if animate else 0.0
+            for index,a in enumerate(range(0,360,45)):
+                angle=math.radians(a+sweep)
+                outer=r+10+(0.55*math.sin(t*1.8+index*.8) if animate else 0.0)
+                line([(cx+(r+5)*math.cos(angle),cy+(r+5)*math.sin(angle)),(cx+outer*math.cos(angle),cy+outer*math.sin(angle))],warm,2)
         def moon():
             edge=round(size*2)
             mask=Image.new('L',(edge,edge));md=ImageDraw.Draw(mask)
@@ -140,43 +146,64 @@ class Painter:
             md.ellipse(local(11,7,51,47),fill=255)
             md.ellipse(local(24,-1,59,34),fill=0)
             self.im.paste(warm,(round(x*2),round(y*2),round(x*2)+edge,round(y*2)+edge),mask)
-            def star(cx,cy,r):
+            def star(cx,cy,r,offset):
+                radius=r*(0.72+0.28*math.sin(t*2.4+offset)) if animate else r
                 points=[]
                 for index in range(8):
                     angle=-math.pi/2+index*math.pi/4
-                    radius=r if index%2==0 else r*.28
-                    points.append((round((x+(cx+radius*math.cos(angle))*s)*2),
-                                   round((y+(cy+radius*math.sin(angle))*s)*2)))
+                    lobe=radius if index%2==0 else radius*.28
+                    points.append((round((x+(cx+lobe*math.cos(angle))*s)*2),
+                                   round((y+(cy+lobe*math.sin(angle))*s)*2)))
                 self.d.polygon(points,fill=warm)
-            star(53,14,3.2)
-            star(11,43,2.3)
-        def cloud():
-            self.ellipse(box(8,23,34,47),blue);self.ellipse(box(22,11,51,44),blue);self.ellipse(box(39,24,62,47),blue)
-            self.rect(box(11,32,57,47),blue,6*s)
+            star(53,14,3.2,0)
+            star(11,43,2.3,1.7)
+        def cloud(dx=0.0,dy=0.0):
+            self.ellipse(box(8+dx,23+dy,34+dx,47+dy),blue);self.ellipse(box(22+dx,11+dy,51+dx,44+dy),blue);self.ellipse(box(39+dx,24+dy,62+dx,47+dy),blue)
+            self.rect(box(11+dx,32+dy,57+dx,47+dy),blue,6*s)
+        drift=sway(.7,0,2.2);bob=sway(1.3,.7,.6)
         if code==0:sun() if is_day else moon()
         elif code==1:
             # Mostly clear: a prominent sun/moon and one small cloud, distinct
             # from both clear sky and the larger partly-cloudy silhouette.
             sun(26,24,14) if is_day else moon()
-            self.ellipse(box(33,34,49,49),blue)
-            self.ellipse(box(42,28,59,49),blue)
-            self.rect(box(36,41,60,51),blue,5*s)
+            dx=drift*.7;dy=bob*.6
+            self.ellipse(box(33+dx,34+dy,49+dx,49+dy),blue)
+            self.ellipse(box(42+dx,28+dy,59+dx,49+dy),blue)
+            self.rect(box(36+dx,41+dy,60+dx,51+dy),blue,5*s)
         elif code==2:
-            sun(19,19,9) if is_day else moon();cloud()
-        elif code==3:cloud()
+            sun(19,19,9) if is_day else moon();cloud(drift,bob)
+        elif code==3:cloud(drift,bob)
         elif code in (45,48):
-            for yy,xx in ((18,8),(30,2),(42,10),(54,6)):line([(xx,yy),(60-xx/2,yy)],blue,3)
+            for index,(yy,xx) in enumerate(((18,8),(30,2),(42,10),(54,6))):
+                shift=sway(.55,index*.9,3.0)
+                line([(xx+shift,yy),(60-xx/2+shift,yy)],blue,3)
         else:
-            cloud()
+            cloud(drift*.8,bob*.7)
             if code in (71,73,75,77,85,86):
-                for xx in (16,35,53):
-                    for a in (0,60,120):
-                        t=math.radians(a);line([(xx-4*math.cos(t),56-4*math.sin(t)),(xx+4*math.cos(t),56+4*math.sin(t))],primary,1.5)
+                if animate:
+                    for index,(xx,offset) in enumerate(((14,0.0),(28,6.2),(43,3.1),(57,9.4))):
+                        yy=44+((t*5.2+offset)%17)
+                        sx=xx+sway(1.05,index*2.1,1.7)
+                        for a in (0,60,120):
+                            angle=math.radians(a)
+                            line([(sx-3*math.cos(angle),yy-3*math.sin(angle)),
+                                  (sx+3*math.cos(angle),yy+3*math.sin(angle))],primary,1.4)
+                else:
+                    for xx in (16,35,53):
+                        for a in (0,60,120):
+                            angle=math.radians(a);line([(xx-4*math.cos(angle),56-4*math.sin(angle)),(xx+4*math.cos(angle),56+4*math.sin(angle))],primary,1.5)
             elif code in (95,96,99):
                 pts=[(31,44),(23,57),(32,56),(29,65),(43,49),(34,49)]
-                self.d.polygon([(round((x+a*s)*2),round((y+b*s)*2)) for a,b in pts],fill=warm)
+                fill='#FFF4CC' if animate and (t%3.2)<.38 else warm
+                self.d.polygon([(round((x+a*s)*2),round((y+b*s)*2)) for a,b in pts],fill=fill)
             elif code in (51,53,55,56,57,61,63,65,66,67,80,81,82):
-                for xx in (17,35,53):line([(xx,52),(xx-4,61)],primary,2.5)
+                if animate:
+                    for index,xx in enumerate((17,35,53)):
+                        yy=47+((t*9.5+index*4.3)%12)
+                        dx=sway(.8,index*.9,.7)
+                        line([(xx+dx,yy),(xx-2+dx,yy+4.5)],primary,2.3)
+                else:
+                    for xx in (17,35,53):line([(xx,52),(xx-4,61)],primary,2.5)
             else:self.text(x+size/2,y+size*.76,'?',round(size*.22),self.c['muted'],True,'mt')
 
     def finish(self):return self.im.resize((self.w,self.h),Image.Resampling.LANCZOS)
@@ -292,7 +319,7 @@ def load_color(p,percent):
     return p.c['primary']
 
 
-def overview(p,m,weather,landscape,overview_content=None):
+def overview(p,m,weather,landscape,overview_content=None,animation=None):
     w=p.w
     def percent_right(y,key,size=42,baseline=False):
         unit=p.measure('%',21,True) if number(m.get(key)) is not None else 0
@@ -403,7 +430,7 @@ def overview(p,m,weather,landscape,overview_content=None):
     p.bar(20,ry+rh-(5 if landscape else 12),w-40,m.get('ram_percent'),p.c['memory'],4)
     card_box=(8,274,w-8,312) if landscape else (8,375,w-8,472)
     if not overview_content_card(p,overview_content,card_box,landscape):
-        weather_card(p,weather,card_box,landscape)
+        weather_card(p,weather,card_box,landscape,animation)
 
 
 def compact_weather_description(description):
@@ -415,7 +442,7 @@ def compact_weather_description(description):
     return text[:1].upper()+text[1:]
 
 
-def weather_card(p,weather,box,landscape):
+def weather_card(p,weather,box,landscape,animation=None):
     original_colors=p.c
     p.c=dict(THEMES['night'],cloud='#DBEBFA',primary='#82DEFF')
     x,y,x2,y2=box;cw,ch=x2-x,y2-y
@@ -430,13 +457,13 @@ def weather_card(p,weather,box,landscape):
     temp=value(weather.get('temperature'),'°');city=weather.get('city') or 'Погода'
     if landscape:
         p.text(x+10,y+3,temp,32,p.c['text'],True)
-        p.weather_icon(x+75,y+1,weather.get('weather_code'),36,day)
+        p.weather_icon(x+75,y+1,weather.get('weather_code'),36,day,phase=animation)
         p.fit(x+120,y+10,city,155,18,p.c['text'],True)
         p.text(x2-10,y+11,'Кэш погоды' if weather.get('stale') else f"Ветер {value(weather.get('wind_kmh'))} км/ч",16,p.c['text'],anchor='rt')
     else:
         p.fit(x+12,y+10,city,190,19,p.c['text'],True)
         p.text(x+12,y+35,temp,44,p.c['text'],True)
-        p.weather_icon(x2-76,y+8,weather.get('weather_code'),66,day)
+        p.weather_icon(x2-76,y+8,weather.get('weather_code'),66,day,phase=animation)
         description=compact_weather_description(weather.get('description'))
         lines=[];line=''
         for word in description.split():
@@ -847,19 +874,19 @@ def overview_content_card(p,content,box,landscape):
             p.text(text_x,y+68,'СЕЙЧАС ИГРАЕТ',13,p.c['memory'],True)
     return True
 
-def render(metrics,weather,history,page='overview',rotation=90,now=None,alert='',media=None,theme='night',brand_name='Мой компьютер',overview_content=None):
+def render(metrics,weather,history,page='overview',rotation=90,now=None,alert='',media=None,theme='night',brand_name='Мой компьютер',overview_content=None,animation=None):
     now=now or datetime.now();metrics=metrics if isinstance(metrics,dict) else {};weather=weather if isinstance(weather,dict) else {}
     history=history if isinstance(history,dict) else {};media=media if isinstance(media,dict) else {};landscape=rotation in (90,270)
     p=Painter(480 if landscape else 320,320 if landscape else 480,theme);header(p,page,now,brand_name)
     if page in ('clock','media') or (page=='gaming' and number(metrics.get('fps')) is not None):
         p.rect((8,39,p.w-8,p.h-8),radius=20)
-    if page=='overview':overview(p,metrics,weather,landscape,overview_content)
+    if page=='overview':overview(p,metrics,weather,landscape,overview_content=overview_content,animation=animation)
     elif page in ('graphs','thermal'):graph_page(p,metrics,history,page=='thermal',landscape)
     elif page=='weather':weather_page(p,weather,landscape)
     elif page=='clock':clock_page(p,metrics,now,landscape)
     elif page=='media':media_page(p,media,landscape)
     elif page=='gaming':gaming_page(p,metrics,landscape)
-    else:overview(p,metrics,weather,landscape)
+    else:overview(p,metrics,weather,landscape,animation=animation)
     if alert:
         p.rect((4,p.h-54,p.w-4,p.h-4),'#512330',10,RED)
         short=str(alert).replace(' — высокая температура','').replace('Процессор:','CPU').replace('Видеокарта:','GPU')

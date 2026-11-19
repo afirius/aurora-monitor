@@ -47,6 +47,26 @@ class AppTests(unittest.TestCase):
         app.last_media_sample = time.monotonic() - 16
         self.assertEqual(app._next_auto_page(), "overview")
 
+    def test_weather_card_animation_only_speeds_up_the_overview(self):
+        app = App.__new__(App)
+        app.page = "overview"
+        app.root = Mock()
+        app.root.state.return_value = "normal"
+        app.args = SimpleNamespace(preview=True)
+        app.settings = DEFAULTS.copy()
+        app.weather = Mock()
+        app.weather.snapshot.return_value = {"weather_code": 71}
+        app.media = {}
+        app.last_media_sample = time.monotonic()
+        app._current_metrics = Mock(return_value=({}, False))
+        self.assertTrue(app._weather_animation_visible())
+        app._weather_animation = True
+        self.assertEqual(app._tick_delay_ms(), 250)
+        app.page = "weather"
+        self.assertFalse(app._weather_animation_visible())
+        app._weather_animation = False
+        self.assertEqual(app._tick_delay_ms(), 1000)
+
     def test_overview_render_receives_live_content_without_changing_full_page(self):
         app = App.__new__(App)
         app.closed = False

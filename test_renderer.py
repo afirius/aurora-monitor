@@ -3,6 +3,7 @@ from datetime import datetime
 from collections import deque
 import unittest
 from unittest.mock import patch
+from PIL import ImageChops
 from renderer import Painter, render, value, THEMES, short_model
 
 
@@ -278,6 +279,46 @@ class RendererTests(unittest.TestCase):
             return p.finish().tobytes()
         self.assertNotEqual(icon(0), icon(0, False))
         self.assertEqual(len({icon(code) for code in (None, 0, 3, 45, 61, 71, 95)}), 7)
+
+    def test_weather_icon_animation_is_opt_in_and_moves_every_family(self):
+        def icon(code, phase, day=True):
+            p = Painter(80, 80)
+            p.weather_icon(8, 8, code, 64, day, phase)
+            return p.finish().tobytes()
+        for code, day in ((0, True), (0, False), (1, True), (1, False),
+                          (2, True), (3, True), (45, True), (61, True),
+                          (71, True), (95, True)):
+            with self.subTest(code=code, day=day):
+                self.assertNotEqual(icon(code, 0.0, day), icon(code, 1.7, day))
+        for code in (0, 3, 45, 61, 71, 95):
+            self.assertEqual(icon(code, None), icon(code, None))
+
+    def test_weather_widget_animation_stays_inside_the_bottom_icon(self):
+        metrics = dict(cpu_temp=65, gpu_temp=41, ram_used_gb=16,
+                       ram_total_gb=32, ram_percent=50, ram_temp=42)
+        weather = dict(city='Москва', temperature=-5, feels_like=-8,
+                       wind_kmh=11, description='Снег', weather_code=71,
+                       is_day=True)
+        expected = {
+            0: (232, 379, 306, 455),
+            90: (79, 271, 123, 316),
+        }
+        for rotation, box in expected.items():
+            with self.subTest(rotation=rotation):
+                def frame(phase):
+                    return render(metrics, weather, {}, rotation=rotation,
+                                  now=datetime(2026, 11, 19, 8, 0),
+                                  animation=phase)
+                static = frame(None)
+                self.assertEqual(static.tobytes(), frame(None).tobytes())
+                animated = frame(0.8)
+                self.assertNotEqual(static.tobytes(), animated.tobytes())
+                diff = ImageChops.difference(static, animated).getbbox()
+                self.assertIsNotNone(diff)
+                self.assertTrue(diff[0] >= box[0] and diff[1] >= box[1],
+                                (rotation, diff, box))
+                self.assertTrue(diff[2] <= box[2] and diff[3] <= box[3],
+                                (rotation, diff, box))
 
     def test_each_palette_renders_both_panel_orientations(self):
         for theme in THEMES:

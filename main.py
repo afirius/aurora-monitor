@@ -65,6 +65,7 @@ DEFAULTS = dict(
     port="AUTO", usb_enabled=True, cpu_alert=90, gpu_alert=85,
     page="overview", theme="auto", brand_name="Мой компьютер", autostart=True,
 )
+WEATHER_ANIMATION_MS = 250
 BG = UI_PALETTES["night"]["bg"]
 PANEL = UI_PALETTES["night"]["panel"]
 PANEL_2 = UI_PALETTES["night"]["panel_2"]
@@ -256,6 +257,7 @@ class App:
         self.alert = ""
         self.tray = None
         self._render_pending = False
+        self._weather_animation = False
         self._photo = None
         self._preview_mode = "fit"
         self._show_event = show_event
@@ -717,6 +719,26 @@ class App:
         self._render_pending = True
         self.root.after_idle(self._render_once)
 
+    def _weather_animation_visible(self, weather: dict | None = None) -> bool:
+        """Animate only the visible bottom weather card on the overview."""
+        if self.page != "overview":
+            return False
+        if (self.root.state() == "withdrawn" and
+                (self.args.preview or not self.settings["usb_enabled"])):
+            return False
+        weather = self.weather.snapshot() if weather is None else weather
+        if not isinstance(weather, dict) or weather.get("weather_code") is None:
+            return False
+        if self.settings.get("context_auto"):
+            media = (self.media if time.monotonic() - self.last_media_sample <= 15
+                     else {})
+            if select_overview_content(self._current_metrics()[0], media) is not None:
+                return False
+        return True
+
+    def _tick_delay_ms(self) -> int:
+        return WEATHER_ANIMATION_MS if getattr(self, "_weather_animation", False) else 1000
+
     def tick(self) -> None:
         if self.closed:
             return
@@ -786,7 +808,7 @@ class App:
             logging.exception("Ошибка интерфейса")
         finally:
             if not self.closed:
-                self.root.after(0 if more_events else 1000, self.tick)
+                self.root.after(0 if more_events else self._tick_delay_ms(), self.tick)
 
     def _current_metrics(self) -> tuple[dict, bool]:
         metrics = self.metrics.copy()
@@ -817,14 +839,18 @@ class App:
             metrics, stale = self._current_metrics()
             media = (self.media if time.monotonic() - getattr(self, "last_media_sample", 0.0) <= 15
                      else {})
-            frame = render(metrics, self.weather.snapshot(), self.history,
+            weather = self.weather.snapshot()
+            animate_weather = self._weather_animation_visible(weather)
+            self._weather_animation = animate_weather
+            frame = render(metrics, weather, self.history,
                            self.page, self.settings["rotation"],
                            alert=(self.sensor_error or "Нет свежих данных датчиков")
                            if stale else self.alert,
                            media=media, theme=self._ui_theme,
                            brand_name=self.settings["brand_name"],
                            overview_content=(select_overview_content(metrics, media)
-                                             if self.settings["context_auto"] else None))
+                                             if self.settings["context_auto"] else None),
+                           animation=time.monotonic() if animate_weather else None)
             if self.settings["usb_enabled"] and not self.args.preview:
                 self.display.submit(frame)
             if self.root.state() != "withdrawn":
@@ -1493,7 +1519,7 @@ def main() -> None:
         import asyncio
 
         report = {
-            "version": "0.4.1",
+            "version": "0.4.2",
             "frozen": bool(getattr(sys, "frozen", False)),
             "elevated": is_elevated(),
             "resource_root": str(resource_root()),
@@ -1538,7 +1564,7 @@ def main() -> None:
     if already_running:
         return
     try:
-        logging.info("Запуск АВРОРЫ 0.4.1")
+        logging.info("Запуск АВРОРЫ 0.4.2")
         root = tk.Tk()
         if args.autostart:
             root.withdraw()
