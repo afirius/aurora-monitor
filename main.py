@@ -24,7 +24,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 import psutil
 
 from display import DisplayWorker
-from renderer import render, speed, value, Painter, hardware_badge, short_model, hardware_vendor
+from renderer import render, speed, value, number, Painter, hardware_badge, short_model, hardware_vendor
+from weather_scene import sky_kind
 from mac_widgets import (PillButton, SidebarButton, RoundedPanel, SlimScrollbar,
                          SmoothScale, ToggleSwitch, SelectField, StepperField, TextField)
 from app_icon import ICON_ICO, icon_image
@@ -45,8 +46,15 @@ PAGES = {
     "media": "Музыка",
     "gaming": "Игра",
 }
-THEMES = {"auto": "Автоматически", "day": "Дневная", "night": "Ночная"}
+THEMES = {"luminous": "Сияние", "luminous_classic": "Сияние · погода снизу",
+          "auto": "Автоматически", "day": "Дневная", "night": "Ночная"}
+LUMINOUS_MODES = {"auto": "Авто", "day": "День", "night": "Ночь"}
+LUMINOUS_DAY_VARIANT = {"luminous": "luminous_day", "luminous_classic": "luminous_classic_day"}
 UI_PALETTES = {
+    "luminous": dict(bg="#111624", side="#182137", panel="#1E2B43", panel_2="#283851",
+                     border="#405472", text="#F7FAFF", muted="#BFCDE3",
+                     accent="#8ECFFF", accent_fill="#2265A1",
+                     selection="#29496C", gpu="#C5B5FF", ram="#85E6CD"),
     "day": dict(bg="#F1F1F4", side="#E6E7EC", panel="#FFFFFF", panel_2="#F2F3F6",
                 border="#D4D5DD", text="#202125", muted="#63646D",
                 accent="#1672D8", accent_fill="#1672D8",
@@ -58,14 +66,21 @@ UI_PALETTES = {
                   selection="#244A77", gpu="#B5A6FF",
                   ram="#69D9A6"),
 }
+UI_PALETTES["luminous_classic"] = UI_PALETTES["luminous"].copy()
+UI_PALETTES["luminous_day"] = dict(
+    bg="#F2F4F8", side="#E6EBF5", panel="#FFFFFF", panel_2="#E9EDF5",
+    border="#CDD4E1", text="#202737", muted="#525F74", accent="#215C9E",
+    accent_fill="#245D9B", selection="#DDE9FB", gpu="#63448F", ram="#166C5C",
+)
+UI_PALETTES["luminous_classic_day"] = UI_PALETTES["luminous_day"].copy()
 DEFAULTS = dict(
     city="Москва", latitude=55.7558, longitude=37.6173,
     rotation=90, brightness=100, night_brightness=18, night_mode=True,
     night_start=23, night_end=8, auto_pages=False, context_auto=True, page_seconds=20,
     port="AUTO", usb_enabled=True, cpu_alert=90, gpu_alert=85,
-    page="overview", theme="auto", brand_name="Мой компьютер", autostart=True,
+    page="overview", theme="luminous", luminous_mode="auto", brand_name="Мой компьютер", autostart=True,
 )
-WEATHER_ANIMATION_MS = 250
+WEATHER_ANIMATION_MS = 125
 BG = UI_PALETTES["night"]["bg"]
 PANEL = UI_PALETTES["night"]["panel"]
 PANEL_2 = UI_PALETTES["night"]["panel_2"]
@@ -98,6 +113,9 @@ def select_overview_content(metrics: dict, media: dict) -> dict | None:
             "artist": media.get("artist"),
             "album": media.get("album"),
             "thumbnail_bytes": media.get("thumbnail_bytes"),
+            "is_playing": True,
+            **{key: media[key] for key in ("position_seconds", "duration_seconds", "position_sampled_at")
+               if key in media},
         }
     return None
 
@@ -157,15 +175,21 @@ def load_settings(path: Path) -> dict:
         settings["theme"] = "night"
     if not isinstance(settings["theme"], str) or settings["theme"] not in THEMES:
         settings["theme"] = DEFAULTS["theme"]
+    mode = settings["luminous_mode"]
+    if not isinstance(mode, str) or mode not in LUMINOUS_MODES:
+        settings["luminous_mode"] = DEFAULTS["luminous_mode"]
     settings["brand_name"] = normalize_brand_name(settings["brand_name"])
     return settings
 
 
-def night_active(settings: dict, hour: int | None = None) -> bool:
+def _night_hours(settings: dict, hour: int | None = None) -> bool:
     hour = datetime.now().hour if hour is None else hour
     start, end = settings["night_start"], settings["night_end"]
-    night = (hour >= start or hour < end) if start > end else start <= hour < end
-    return settings["night_mode"] and night
+    return (hour >= start or hour < end) if start > end else start <= hour < end
+
+
+def night_active(settings: dict, hour: int | None = None) -> bool:
+    return settings["night_mode"] and _night_hours(settings, hour)
 
 
 def effective_brightness(settings: dict, hour: int | None = None) -> int:
@@ -174,8 +198,12 @@ def effective_brightness(settings: dict, hour: int | None = None) -> int:
 
 def effective_theme(settings: dict, hour: int | None = None) -> str:
     """Resolve the optional automatic theme using the brightness night schedule."""
-    chosen = settings.get("theme", "auto")
-    if chosen in ("day", "night"):
+    chosen = settings.get("theme", DEFAULTS["theme"])
+    if isinstance(chosen, str) and chosen in LUMINOUS_DAY_VARIANT:
+        mode = settings.get("luminous_mode", "auto")
+        day = mode == "day" or (mode != "night" and not _night_hours(settings, hour))
+        return LUMINOUS_DAY_VARIANT[chosen] if day else chosen
+    if isinstance(chosen, str) and chosen in UI_PALETTES:
         return chosen
     return "night" if night_active(settings, hour) else "day"
 
@@ -727,7 +755,8 @@ class App:
                 (self.args.preview or not self.settings["usb_enabled"])):
             return False
         weather = self.weather.snapshot() if weather is None else weather
-        if not isinstance(weather, dict) or weather.get("weather_code") is None:
+        code = number(weather.get("weather_code")) if isinstance(weather, dict) else None
+        if code is None or sky_kind(int(code)) == 'unknown':
             return False
         if self.settings.get("context_auto"):
             media = (self.media if time.monotonic() - self.last_media_sample <= 15
@@ -1136,6 +1165,7 @@ class App:
 
         rotation = tk.StringVar(value=str(self.settings["rotation"]))
         theme = tk.StringVar(value=THEMES[self.settings["theme"]])
+        luminous_mode = tk.StringVar(value=LUMINOUS_MODES[self.settings["luminous_mode"]])
         brand_name = tk.StringVar(value=self.settings["brand_name"])
         brightness = tk.IntVar(value=self.settings["brightness"])
         night_brightness = tk.IntVar(value=self.settings["night_brightness"])
@@ -1177,9 +1207,18 @@ class App:
         SelectField(rotation_column, variable=rotation,
                     values=["0", "90", "180", "270"], palette=palette,
                     width=110).pack()
-        tk.Label(screen, text="Авто — день и ночь по заданным часам",
-                 bg=PANEL, fg=MUTED, font=("Segoe UI", 9), anchor="w").pack(
-                     fill="x", padx=18, pady=(3, 0))
+        mode_row = tk.Frame(screen, bg=PANEL)
+        mode_label = tk.Label(mode_row, text="Режим «Сияния»", bg=PANEL, fg=TEXT, font=("Segoe UI", 11))
+        mode_label.pack(side="left")
+        SelectField(mode_row, variable=luminous_mode, values=list(LUMINOUS_MODES.values()),
+                    palette=palette, width=110).pack(side="right")
+        def show_luminous_mode(*_):
+            if theme.get() in (THEMES[key] for key in LUMINOUS_DAY_VARIANT):
+                mode_row.pack(after=appearance, fill="x", padx=18, pady=(7, 0))
+            else:
+                mode_row.pack_forget()
+        theme.trace_add("write", show_luminous_mode)
+        show_luminous_mode()
         small_label(screen, "Название на экране")
         TextField(screen, variable=brand_name, palette=palette).pack(fill="x", padx=18)
 
@@ -1198,6 +1237,7 @@ class App:
             SmoothScale(column, variable=variable, palette=palette).pack(fill="x")
 
         switch_row(screen, "Ночная яркость по расписанию", night_mode, 8)
+        small_label(screen, "Часы ночного режима для яркости и темы «Сияние» в режиме «Авто»")
         hours = tk.Frame(screen, bg=PANEL)
         hours.pack(fill="x", padx=18, pady=(4, 0))
         tk.Label(hours, text="С", bg=PANEL, fg=MUTED,
@@ -1333,6 +1373,8 @@ class App:
                                      if label == theme.get()), None)
                 next_settings.update(
                     rotation=int(rotation.get()), theme=chosen_theme,
+                    luminous_mode=next(key for key, label in LUMINOUS_MODES.items()
+                                       if label == luminous_mode.get()),
                     brand_name=normalize_brand_name(brand_name.get()),
                     brightness=int(brightness.get()),
                     night_brightness=int(night_brightness.get()),
@@ -1519,7 +1561,7 @@ def main() -> None:
         import asyncio
 
         report = {
-            "version": "0.4.2",
+            "version": "0.5.20",
             "frozen": bool(getattr(sys, "frozen", False)),
             "elevated": is_elevated(),
             "resource_root": str(resource_root()),
@@ -1564,7 +1606,7 @@ def main() -> None:
     if already_running:
         return
     try:
-        logging.info("Запуск АВРОРЫ 0.4.2")
+        logging.info("Запуск АВРОРЫ 0.5.20")
         root = tk.Tk()
         if args.autostart:
             root.withdraw()

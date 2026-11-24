@@ -6,13 +6,20 @@ from io import BytesIO
 import math
 import os
 import time
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-from glass_material import wallpaper, panel_tile
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
+from glass_material import DAY_THEMES, LUMINOUS_DAY_THEMES, LUMINOUS_THEMES, PORCELAIN, overview_strip, wallpaper, panel_tile
+from weather_scene import card_surface, draw_scene, sky_kind, sky_panorama
 
 THEMES = {
+ 'luminous': dict(bg='#000000',card='#1B1D22',line='#3C3D45',text='#FCFAF6',muted='#CFCCD0',primary='#DEC49F',secondary='#C5BEF4',warm='#FFD896',memory='#A8E8D3'),
  'day': dict(bg='#EAF0FB',card='#FFFFFF',line='#CFD7E7',text='#202126',muted='#515866',primary='#0068DC',secondary='#7848CF',warm='#AC5A0A',memory='#167C50'),
  'night': dict(bg='#111321',card='#25293E',line='#3D4560',text='#FAFAFC',muted='#C1C5D0',primary='#65B7FF',secondary='#C4A0FF',warm='#FFD08A',memory='#67DFAB'),
 }
+THEMES['luminous_classic'] = THEMES['luminous']
+THEMES['luminous_day'] = dict(bg=PORCELAIN,card='#FFFFFF',line='#AEB9CD',text='#181F2B',
+                             muted='#42516A',primary='#225C96',secondary='#614487',
+                             warm='#875413',memory='#166C59')
+THEMES['luminous_classic_day'] = THEMES['luminous_day']
 RED='#FF8B98'
 
 @lru_cache(maxsize=80)
@@ -50,6 +57,35 @@ def album_image(data,size):
 @lru_cache(maxsize=6)
 def background(w,h,theme):
     return wallpaper(w,h,theme,2)
+
+@lru_cache(maxsize=48)
+def _vertical(w, h, top, bottom):
+    im = Image.new('RGB', (w, h))
+    d = ImageDraw.Draw(im)
+    for y in range(h):
+        f = y / max(1, h - 1)
+        d.line((0, y, w, y), fill=tuple(round(a + (b - a) * f) for a, b in zip(top, bottom)))
+    return im
+
+
+@lru_cache(maxsize=48)
+def _disc(diameter, inner, outer):
+    g = Image.radial_gradient('L').resize((diameter, diameter), Image.Resampling.LANCZOS)
+    return ImageOps.colorize(g, inner, outer).convert('RGBA')
+
+
+@lru_cache(maxsize=48)
+def _halo(diameter, color, power=1.7):
+    g = Image.radial_gradient('L').resize((diameter, diameter), Image.Resampling.LANCZOS)
+    alpha = ImageOps.invert(g).point(lambda v: int((v / 255) ** power * 255))
+    im = Image.new('RGBA', (diameter, diameter), color + (0,))
+    im.putalpha(alpha)
+    return im
+
+
+def _mix(a, b, f):
+    return tuple(round(x + (y - x) * f) for x, y in zip(a, b))
+
 
 class Painter:
     def __init__(self,w,h,theme='night'):
@@ -118,98 +154,321 @@ class Painter:
         if points:
             px,py=points[-1];self.ellipse((px-3,py-3,px+3,py+3),color)
 
-    def weather_icon(self,x,y,code,size=64,is_day=True,phase=None):
-        s=size/64
-        def box(a,b,c,d):return (x+a*s,y+b*s,x+c*s,y+d*s)
-        def line(points,color,width=2):self.line([(x+a*s,y+b*s) for a,b in points],color,width*s)
-        primary,blue,warm=self.c['primary'],self.c.get('cloud',('#657D97' if self.theme=='day' else '#B6CDDF')),('#E79B20' if self.theme=='day' else '#FFD08A')
-        code=number(code)
+    def weather_icon(self, x, y, code, size=64, is_day=True, phase=None):
+        code = number(code)
+        W = max(8, round(size * 2))
+        u = W / 64.0
         if code is None:
-            self.ellipse(box(9,9,55,55),outline=self.c['muted'],width=2*s)
-            self.text(x+size/2,y+size*.22,'?',round(size*.5),self.c['muted'],True,'mt');return
-        code=int(code)
-        motion=number(phase);animate=motion is not None;t=motion or 0.0
-        def sway(rate,offset=0.0,amount=1.0):
-            return amount*math.sin(t*rate+offset) if animate else 0.0
-        def sun(cx=32,cy=29,r=13):
-            self.ellipse(box(cx-r,cy-r,cx+r,cy+r),warm)
-            sweep=t*18 if animate else 0.0
-            for index,a in enumerate(range(0,360,45)):
-                angle=math.radians(a+sweep)
-                outer=r+10+(0.55*math.sin(t*1.8+index*.8) if animate else 0.0)
-                line([(cx+(r+5)*math.cos(angle),cy+(r+5)*math.sin(angle)),(cx+outer*math.cos(angle),cy+outer*math.sin(angle))],warm,2)
-        def moon():
-            edge=round(size*2)
-            mask=Image.new('L',(edge,edge));md=ImageDraw.Draw(mask)
-            def local(a,b,c,d):return tuple(round(v*s*2) for v in (a,b,c,d))
-            # A slim, clean young crescent with a soft warm fill.
-            md.ellipse(local(11,7,51,47),fill=255)
-            md.ellipse(local(24,-1,59,34),fill=0)
-            self.im.paste(warm,(round(x*2),round(y*2),round(x*2)+edge,round(y*2)+edge),mask)
-            def star(cx,cy,r,offset):
-                radius=r*(0.72+0.28*math.sin(t*2.4+offset)) if animate else r
-                points=[]
-                for index in range(8):
-                    angle=-math.pi/2+index*math.pi/4
-                    lobe=radius if index%2==0 else radius*.28
-                    points.append((round((x+(cx+lobe*math.cos(angle))*s)*2),
-                                   round((y+(cy+lobe*math.sin(angle))*s)*2)))
-                self.d.polygon(points,fill=warm)
-            star(53,14,3.2,0)
-            star(11,43,2.3,1.7)
-        def cloud(dx=0.0,dy=0.0):
-            self.ellipse(box(8+dx,23+dy,34+dx,47+dy),blue);self.ellipse(box(22+dx,11+dy,51+dx,44+dy),blue);self.ellipse(box(39+dx,24+dy,62+dx,47+dy),blue)
-            self.rect(box(11+dx,32+dy,57+dx,47+dy),blue,6*s)
-        drift=sway(.7,0,2.2);bob=sway(1.3,.7,.6)
-        if code==0:sun() if is_day else moon()
-        elif code==1:
-            # Mostly clear: a prominent sun/moon and one small cloud, distinct
-            # from both clear sky and the larger partly-cloudy silhouette.
-            sun(26,24,14) if is_day else moon()
-            dx=drift*.7;dy=bob*.6
-            self.ellipse(box(33+dx,34+dy,49+dx,49+dy),blue)
-            self.ellipse(box(42+dx,28+dy,59+dx,49+dy),blue)
-            self.rect(box(36+dx,41+dy,60+dx,51+dy),blue,5*s)
-        elif code==2:
-            sun(19,19,9) if is_day else moon();cloud(drift,bob)
-        elif code==3:cloud(drift,bob)
-        elif code in (45,48):
-            for index,(yy,xx) in enumerate(((18,8),(30,2),(42,10),(54,6))):
-                shift=sway(.55,index*.9,3.0)
-                line([(xx+shift,yy),(60-xx/2+shift,yy)],blue,3)
+            self.ellipse((x + 9, y + 9, x + size - 9, y + size - 9),
+                         outline=self.c['muted'], width=2 * size / 64)
+            self.text(x + size / 2, y + size * .22, '?', round(size * .5),
+                      self.c['muted'], True, 'mt')
+            return
+        code = int(code)
+        motion = number(phase)
+        animate = motion is not None
+        t = motion or 0.0
+        sprite = Image.new('RGBA', (W, W), (0, 0, 0, 0))
+
+        def add(im, dx=0, dy=0):
+            nonlocal sprite
+            sprite.alpha_composite(im, (round(dx), round(dy)))
+
+        def layer():
+            lay = Image.new('RGBA', (W, W), (0, 0, 0, 0))
+            return lay, ImageDraw.Draw(lay)
+
+        def box(a, b, c, d):
+            return (a * u, b * u, c * u, d * u)
+
+        def pt(a, b):
+            return (a * u, b * u)
+
+        def sway(rate, offset=0.0, amount=1.0):
+            return amount * math.sin(t * rate + offset) if animate else 0.0
+
+        def halo(cx, cy, radius, color, alpha=255, power=1.7):
+            diameter = max(2, round(radius * 2 * u))
+            im = _halo(diameter, color, power)
+            if alpha < 255:
+                im = im.copy()
+                im.putalpha(im.getchannel('A').point(lambda v: int(v * alpha / 255)))
+            add(im, cx * u - diameter / 2, cy * u - diameter / 2)
+
+        def disc(cx, cy, radius, inner, outer):
+            diameter = max(3, round(radius * 2 * u))
+            im = _disc(diameter, inner, outer).copy()
+            mask = Image.new('L', (diameter, diameter), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, diameter - 1, diameter - 1), fill=255)
+            im.putalpha(mask)
+            add(im, cx * u - diameter / 2, cy * u - diameter / 2)
+
+        def star4(cx, cy, radius, alpha, angle=-math.pi / 2):
+            lay, d = layer()
+            points = []
+            for i in range(8):
+                a = angle + i * math.pi / 4
+                r = radius if i % 2 == 0 else radius * .2
+                points.append(pt(cx + math.cos(a) * r, cy + math.sin(a) * r))
+            d.polygon(points, fill=(255, 244, 198, alpha))
+            d.ellipse(box(cx - .55, cy - .55, cx + .55, cy + .55),
+                      fill=(255, 255, 238, min(255, alpha + 30)))
+            add(lay)
+
+        def sun(cx=32, cy=29, radius=12.5, strong=True):
+            reach = min(radius * 2.05, cx - 1, cy - 1, 63 - cx, 63 - cy)
+            halo(cx, cy, reach, (255, 183, 78), 120 if strong else 90, 1.75)
+            sweep = math.radians(t * 18) if animate else 0.0
+            rays, rd = layer()
+            for i in range(8):
+                a = sweep + math.radians(i * 45)
+                pulse = .5 * math.sin(t * 1.25 + i * .7) if animate else 0.0
+                r0, r1 = radius + 3.6, radius + 8.8 + pulse
+                w0, w1 = 1.45, .14
+                ca, sa = math.cos(a), math.sin(a)
+                px, py = -sa, ca
+                pts = [(cx + r0 * ca + w0 * px, cy + r0 * sa + w0 * py),
+                       (cx + r1 * ca + w1 * px, cy + r1 * sa + w1 * py),
+                       (cx + r1 * ca - w1 * px, cy + r1 * sa - w1 * py),
+                       (cx + r0 * ca - w0 * px, cy + r0 * sa - w0 * py)]
+                rd.polygon([pt(a, b) for a, b in pts],
+                           fill=(255, 207, 116, 205 if strong else 175))
+            soft = rays.filter(ImageFilter.GaussianBlur(max(1, .85 * u)))
+            soft.putalpha(soft.getchannel('A').point(lambda v: int(v * .5)))
+            add(soft)
+            add(rays)
+            disc(cx, cy, radius, (255, 251, 228), (246, 166, 48))
+            hl, hd = layer()
+            hd.ellipse(box(cx - radius * .55, cy - radius * .68,
+                           cx + radius * .25, cy - radius * .08),
+                       fill=(255, 255, 255, 78))
+            hl = hl.filter(ImageFilter.GaussianBlur(max(1, 1.15 * u)))
+            add(hl)
+            if strong:
+                for i, (mx, my, mr, ph) in enumerate(((13, 12, .8, .2), (51, 8, .55, 1.8),
+                                                       (54, 43, .7, 3.2))):
+                    mx += sway(.28, ph, .65)
+                    my += sway(.34, ph + 1.1, .55)
+                    lay, d = layer()
+                    d.ellipse(box(mx - mr, my - mr, mx + mr, my + mr),
+                              fill=(255, 228, 160, 95))
+                    add(lay)
+
+        def moon(cx=32, cy=27):
+            halo(cx, cy, min(25, cx - 1, cy - 1, 63 - cx, 63 - cy),
+                 (164, 197, 255), 72, 1.9)
+            lay, d = layer()
+            d.ellipse(box(cx - 19, cy - 19, cx + 19, cy + 19), fill=(190, 214, 255, 18))
+            add(lay)
+            mask = Image.new('L', (W, W), 0)
+            md = ImageDraw.Draw(mask)
+            md.ellipse(box(cx - 19, cy - 19, cx + 19, cy + 19), fill=255)
+            md.ellipse(box(cx - 6, cy - 27, cx + 30, cy + 8), fill=0)
+            body = _vertical(W, W, (255, 251, 231), (245, 196, 104)).convert('RGBA')
+            body.putalpha(mask)
+            add(body)
+            for i, (sx, sy, sr, ph) in enumerate(((53, 13, 3.1, .2), (10, 44, 2.2, 1.9),
+                                                   (53, 45, 1.5, 3.4))):
+                tw = .72 + .28 * math.sin(t * 1.4 + ph) if animate else 1.0
+                halo(sx, sy, sr * 2.1, (255, 230, 158), int(44 * tw), 2.1)
+                star4(sx, sy, sr * tw, int(198 + 45 * tw))
+
+        def cloud(dx=0.0, dy=0.0, scale=1.0, storm=False, drift=0.0, bob=0.0):
+            dx += drift
+            dy += bob
+            k = scale
+
+            def cx(a):
+                return 34 + (a - 34) * k + dx
+
+            def cy(b):
+                return 30 + (b - 30) * k + dy
+
+            def px(a, b):
+                return (cx(a) * u, cy(b) * u)
+
+            # A soft shadow makes the cloud sit above the card instead of floating flat.
+            sh, sd = layer()
+            sd.ellipse((*px(5, 40), *px(61, 55)), fill=(3, 12, 28, 70 if not storm else 92))
+            sh = sh.filter(ImageFilter.GaussianBlur(max(1, 2.9 * u * k)))
+            add(sh)
+            puffs = ((2, 23, 27, 46), (15, 9, 47, 44), (33, 17, 61, 46),
+                     (23, 14, 41, 32))
+            base = (5, 32, 62, 47)
+
+            def silhouette(draw, ox=0.0, oy=0.0):
+                for a, b, c, d in puffs:
+                    draw.ellipse((*px(a + ox, b + oy), *px(c + ox, d + oy)), fill=255)
+                draw.rounded_rectangle((*px(base[0] + ox, base[1] + oy),
+                                        *px(base[2] + ox, base[3] + oy)),
+                                       radius=7.5 * u * k, fill=255)
+
+            mask = Image.new('L', (W, W), 0)
+            silhouette(ImageDraw.Draw(mask))
+            top = (214, 222, 237) if storm else (253, 254, 255)
+            bottom = (138, 155, 179) if storm else (201, 220, 238)
+            body = _vertical(W, W, top, bottom).convert('RGBA')
+            body.putalpha(mask)
+            add(body)
+            # Volume comes from a soft base shadow clipped to the silhouette, not
+            # from a second bright ball on top of the cloud.
+            dep, dd = layer()
+            dd.ellipse((*px(6, 35), *px(62, 54)),
+                       fill=(38, 66, 104, 58 if not storm else 78))
+            dep = dep.filter(ImageFilter.GaussianBlur(max(1, 2.7 * u * k)))
+            dep.putalpha(ImageChops.multiply(dep.getchannel('A'), mask))
+            add(dep)
+            # A cool rim light along the upper-left edge separates the cloud from
+            # the sky without drawing a hard outline.
+            rim_mask = Image.new('L', (W, W), 0)
+            silhouette(ImageDraw.Draw(rim_mask), -.9, -1.05)
+            rim_mask = ImageChops.subtract(rim_mask, mask)
+            rim = Image.new('RGBA', (W, W), (255, 255, 255, 0))
+            rim.putalpha(rim_mask.point(lambda v: int(v * (.26 if storm else .38))))
+            rim = rim.filter(ImageFilter.GaussianBlur(max(1, .7 * u * k)))
+            add(rim)
+            hl, hd = layer()
+            hd.ellipse((*px(21, 13), *px(47, 30)), fill=(255, 255, 255, 32 if storm else 46))
+            hl = hl.filter(ImageFilter.GaussianBlur(max(1, 2.5 * u * k)))
+            hl.putalpha(ImageChops.multiply(hl.getchannel('A'), mask))
+            add(hl)
+
+        def rain(count=5, heavy=False):
+            lay, d = layer()
+            span = 18
+            for i in range(count):
+                phase = i * 3.7 + (2.1 if heavy else 0)
+                x = 12 + i * (38 / max(1, count - 1))
+                y = 42 + ((t * (12.0 if heavy else 9.0) + phase) % span) if animate else 45 + (i % 4) * 4
+                length = 7.4 if heavy else 6.0
+                x += sway(.75, i * 1.7, .55)
+                d.line([pt(x, y), pt(x - 1.25, y + length)], fill=(126, 214, 255, 72),
+                       width=max(2, round(3.0 * u)))
+                d.line([pt(x, y), pt(x - 1.25, y + length)], fill=(228, 250, 255, 232),
+                       width=max(1, round(1.35 * u)))
+                d.ellipse(box(x - .95, y - .95, x + .95, y + .95),
+                          fill=(242, 253, 255, 238))
+            add(lay)
+
+        def snow(count=3):
+            lay, d = layer()
+            span = 11
+            for i in range(count):
+                phase = i * 3.6
+                x = (15 + i * (34 / max(1, count - 1))) if count > 1 else 32
+                y = 52 + ((t * 4.2 + phase) % span) if animate else 54 + (i * 3) % 5
+                r = 5.0 if count <= 3 else 3.6
+                rot = t * .75 + i * 1.1 if animate else i * .8
+                x += sway(1.05, i * 2.2, 1.6)
+                halo(x, y, r * 2.2, (188, 227, 255), 78, 1.9)
+                for arm in range(6):
+                    a = rot + arm * math.pi / 3
+                    ex, ey = x + math.cos(a) * r, y + math.sin(a) * r
+                    d.line([pt(x, y), pt(ex, ey)], fill=(235, 249, 255, 244),
+                           width=max(1, round(1.3 * u)))
+                    if r >= 2.8:
+                        bx, by = x + math.cos(a) * r * .62, y + math.sin(a) * r * .62
+                        for side in (-1, 1):
+                            ba = a + side * math.pi / 3
+                            d.line([pt(bx, by), pt(bx + math.cos(ba) * r * .36,
+                                                  by + math.sin(ba) * r * .36)],
+                                   fill=(219, 242, 255, 215), width=max(1, round(.9 * u)))
+                d.ellipse(box(x - .8, y - .8, x + .8, y + .8), fill=(255, 255, 255, 245))
+            add(lay)
+
+        def fog():
+            halo(32, 35, 28, (196, 228, 253), 52, 2.0)
+            lay, d = layer()
+            for i, (yy, x0, x1, alpha, width) in enumerate((
+                    (18, 12, 50, 182, 4.6), (30, 5, 57, 236, 5.4),
+                    (42, 13, 58, 212, 5.0), (53, 8, 46, 160, 4.2))):
+                shift = sway(.36 + i * .03, i * 1.6, 2.6)
+                prev = None
+                steps = 18
+                for j in range(steps + 1):
+                    f = j / steps
+                    bx = x0 + (x1 - x0) * f + shift
+                    by = yy + .7 * math.sin(f * 4.2 + i * 1.7 + t * .45)
+                    taper = math.sin(math.pi * f) ** .55
+                    shade = (226, 244, 255, max(12, int(alpha * taper)))
+                    point = pt(bx, by)
+                    if prev is not None:
+                        d.line([prev, point], fill=shade,
+                               width=max(1, round(width * (.5 + .5 * taper) * u)))
+                    prev = point
+            lay = lay.filter(ImageFilter.GaussianBlur(max(1, .9 * u)))
+            add(lay)
+
+        def bolt(pulse=0.0):
+            pts = [(31, 41), (22, 53), (31, 52), (27, 62), (42, 46), (33, 46)]
+            glow, gd = layer()
+            gd.polygon([pt(a, b) for a, b in pts], fill=(255, 179, 58, 215))
+            glow = glow.filter(ImageFilter.GaussianBlur(max(1, 2.1 * u)))
+            add(glow)
+            core = _mix((255, 208, 105), (255, 255, 244), pulse)
+            lay, d = layer()
+            d.polygon([pt(a, b) for a, b in pts], fill=core + (255,))
+            d.line([pt(a, b) for a, b in pts + [pts[0]]],
+                   fill=(255, 252, 220, 210), width=max(1, round(.8 * u)), joint='curve')
+            add(lay)
+            if pulse > .01:
+                halo(33, 34, 23, (255, 218, 126), int(75 * pulse), 1.9)
+
+        drift = sway(.62, 0, 2.0)
+        bob = sway(1.15, .7, .5)
+        day = bool(is_day)
+        prelim = code in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82)
+        snowing = code in (71, 73, 75, 77, 85, 86)
+        storm = code in (95, 96, 99)
+
+        if code == 0:
+            sun() if day else moon()
+        elif code == 1:
+            sun(25, 23, 12.0, False) if day else moon(27, 24)
+            cloud(7, 9, .72, drift=drift * .8, bob=bob)
+        elif code == 2:
+            sun(18, 16, 8.8, False) if day else moon(19, 17)
+            cloud(0, 2, .96, drift=drift, bob=bob)
+        elif code == 3:
+            cloud(0, 0, 1.0, drift=drift *.8, bob=bob)
+        elif code in (45, 48):
+            fog()
+        elif prelim:
+            rain(4 if code in (51, 53, 55) else 7 if code in (65, 67) else 6,
+                 heavy=code in (65, 67))
+            cloud(0, -1, 1.0, drift=drift * .6, bob=bob * .6)
+        elif snowing:
+            cloud(0, -1, 1.0, drift=drift * .6, bob=bob * .6)
+            snow(5 if code in (75, 86) else 3)
+        elif storm:
+            rain(3, heavy=False)
+            cloud(0, -1, 1.0, storm=True, drift=drift * .35, bob=bob * .45)
+            if animate:
+                uu = t % 4.3
+                pulse = max(0.0, 1 - abs(uu - .14) / .23)
+                pulse = max(pulse, .78 * max(0.0, 1 - abs(uu - .47) / .14))
+            else:
+                pulse = .0
+            bolt(pulse)
         else:
-            cloud(drift*.8,bob*.7)
-            if code in (71,73,75,77,85,86):
-                if animate:
-                    for index,(xx,offset) in enumerate(((14,0.0),(28,6.2),(43,3.1),(57,9.4))):
-                        yy=44+((t*5.2+offset)%17)
-                        sx=xx+sway(1.05,index*2.1,1.7)
-                        for a in (0,60,120):
-                            angle=math.radians(a)
-                            line([(sx-3*math.cos(angle),yy-3*math.sin(angle)),
-                                  (sx+3*math.cos(angle),yy+3*math.sin(angle))],primary,1.4)
-                else:
-                    for xx in (16,35,53):
-                        for a in (0,60,120):
-                            angle=math.radians(a);line([(xx-4*math.cos(angle),56-4*math.sin(angle)),(xx+4*math.cos(angle),56+4*math.sin(angle))],primary,1.5)
-            elif code in (95,96,99):
-                pts=[(31,44),(23,57),(32,56),(29,65),(43,49),(34,49)]
-                fill='#FFF4CC' if animate and (t%3.2)<.38 else warm
-                self.d.polygon([(round((x+a*s)*2),round((y+b*s)*2)) for a,b in pts],fill=fill)
-            elif code in (51,53,55,56,57,61,63,65,66,67,80,81,82):
-                if animate:
-                    for index,xx in enumerate((17,35,53)):
-                        yy=47+((t*9.5+index*4.3)%12)
-                        dx=sway(.8,index*.9,.7)
-                        line([(xx+dx,yy),(xx-2+dx,yy+4.5)],primary,2.3)
-                else:
-                    for xx in (17,35,53):line([(xx,52),(xx-4,61)],primary,2.5)
-            else:self.text(x+size/2,y+size*.76,'?',round(size*.22),self.c['muted'],True,'mt')
+            lay, d = layer()
+            d.ellipse(box(9, 9, 55, 55), outline=(255, 255, 255, 55), width=max(1, round(1.2 * u)))
+            add(lay)
+            self.text(x + size / 2, y + size * .76, '?', round(size * .22),
+                      self.c['muted'], True, 'mt')
+
+        self.im.paste(sprite, (round(x * 2), round(y * 2)), sprite)
 
     def finish(self):return self.im.resize((self.w,self.h),Image.Resampling.LANCZOS)
 
-def header(p,page,now,brand_name="Мой компьютер"):
+def header(p,page,now,brand_name="Мой компьютер",alert=''):
     titles={'overview':brand_name,'graphs':'Нагрузка','thermal':'Температуры','weather':'Погода','clock':'Часы','media':'Музыка','gaming':'Игра'}
+    if p.theme in LUMINOUS_THEMES:
+        title = str(alert).replace(' — высокая температура', '').replace('Процессор:', 'CPU:').replace('Видеокарта:', 'GPU:') if alert else titles.get(page,brand_name)
+        warning='#A02535' if p.theme in DAY_THEMES else '#FFADA9'
+        p.fit(20,22,title,p.w-120,17,warning if alert else p.c['text'],True,'lm')
+        p.text(p.w-20,22,now.strftime('%H:%M'),21,p.c['text'],True,'rm')
+        return
     p.fit(20,22,titles.get(page,brand_name),p.w-120,17,p.c['text'],True,'lm')
     p.text(p.w-20,22,now.strftime('%H:%M'),21,p.c['text'],True,'rm')
 
@@ -305,7 +564,7 @@ def temperature_color(p,temperature):
     temperature=number(temperature)
     if temperature is None:return p.c['muted']
     temperature=round(temperature)
-    day=p.theme=='day'
+    day=p.theme in DAY_THEMES
     if temperature<60:return '#147D48' if day else '#73E3A6'
     if temperature<85:return '#9C6500' if day else '#FFD36A'
     return '#C52D40' if day else '#FF8490'
@@ -315,12 +574,34 @@ def load_color(p,percent):
     percent=number(percent)
     if percent is None:return p.c['muted']
     percent=round(percent)
-    if percent>=80:return '#B15B00' if p.theme=='day' else '#FFBD69'
+    if percent>=80:return '#925100' if p.theme in LUMINOUS_DAY_THEMES else ('#B15B00' if p.theme=='day' else '#FFBD69')
     return p.c['primary']
+
+
+def video_memory(metrics):
+    """Localized dedicated GPU memory, or None when the source reports neither value."""
+    used = number(metrics.get('gpu_memory_used_mb'))
+    total = number(metrics.get('gpu_memory_total_mb'))
+    used = used/1024 if used is not None and used >= 0 else None
+    total = total/1024 if total is not None and total > 0 else None
+    if used is None and total is None:
+        return None
+    total_digits = 0 if total is None or round(total,1).is_integer() else 1
+    return (value(used,digits=1).replace('.',','),
+            value(total,digits=total_digits).replace('.',','))
 
 
 def overview(p,m,weather,landscape,overview_content=None,animation=None):
     w=p.w
+    borderless=p.theme in LUMINOUS_THEMES
+    cpu_y,gpu_y,ram_y,footer_y=(39,124,209,272) if landscape else (39,152,265,375)
+    if borderless:
+        for top,end,kind in ((0,cpu_y,'header'),(cpu_y,gpu_y,'cpu'),
+                             (gpu_y,ram_y,'gpu'),(ram_y,footer_y,'ram')):
+            p.im.paste(overview_strip(w,end-top,kind,p.theme in LUMINOUS_DAY_THEMES),(0,2*top))
+    def percent_width(key,size):
+        unit=p.measure('%',21,True)+3 if number(m.get(key)) is not None else 0
+        return unit+p.measure(value(m.get(key)),size,True)
     def percent_right(y,key,size=42,baseline=False):
         unit=p.measure('%',21,True) if number(m.get(key)) is not None else 0
         color=load_color(p,m.get(key))
@@ -328,9 +609,11 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
         if unit:p.text(w-20,y if baseline else y+6,'%',21,color,True,'rs' if baseline else 'rm')
     def hardware(top,key,color):
         height=77 if landscape else 105
-        surface(p,(8,top,w-8,top+height),key)
+        if not borderless:
+            surface(p,(8,top,w-8,top+height),key)
         y=top+9
-        hardware_badge(p,20,y,key,color,28)
+        if not borderless:
+            hardware_badge(p,20,y,key,color,28)
         model=short_model(m.get(key+'_name'),key)
         vendor=hardware_vendor(m.get(key+'_name'))
         heat=temperature_color(p,m.get(key+'_temp'))
@@ -340,17 +623,26 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
         frequency_unit='ГГц'
         if mhz is not None and 0<mhz<100:
             frequency=value(mhz);frequency_unit='МГц'
+        vram=video_memory(m) if key=='gpu' else None
+        if vram:
+            frequency, total=vram
+            frequency_unit=f'/ {total} ГБ'
         rpm=value(m.get(key+'_fan_rpm'))
         # One title row, then three fixed columns: clock, cooling, load.
         # Align complete visual groups rather than unrelated text anchors.
         header_size=21
         model_width=170 if landscape else 146
         model=f'{vendor} {model}' if vendor else model
+        load=number(m.get(key+'_percent'))
+        percent_size=50 if landscape else (42 if load is not None and load>=100 else 58)
+        model_x=20 if borderless else 58
+        if borderless:
+            model_width=w-20-percent_width(key+'_percent',percent_size)-model_x-9
         while header_size>16 and p.measure(model,header_size,True)>model_width:header_size-=1
-        p.fit(58,y+14,model,model_width,header_size,p.c['text'],True,'lm')
+        p.fit(model_x,y+14,model,model_width,header_size,p.c['text'],True,'lm')
         if landscape:
-            p.text(20,top+64,frequency,32,p.c['text'],True,'ls')
-            p.text(25+p.measure(frequency,32,True),top+64,frequency_unit,18,p.c['muted'],anchor='ls')
+            p.fit(20,top+64,frequency,120,32,p.c['text'],True,'ls')
+            p.text(25+min(120,p.measure(frequency,32,True)),top+64,frequency_unit,18,p.c['muted'],anchor='ls')
             cooling_x=285
             rpm_size=20;rpm_unit=17
             rpm_width=20+p.measure(rpm,rpm_size,True)+4+p.measure('rpm',rpm_unit)
@@ -361,14 +653,17 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
             temp_width=18+p.measure(temperature,rpm_size,True)
             hardware_icon(p,cooling_x-temp_width/2,top+47,'temp',heat,18)
             p.text(cooling_x-temp_width/2+18,top+64,temperature,rpm_size,heat,True,'ls')
-            percent_right(top+41,key+'_percent',50,baseline=True)
+            percent_right(top+41,key+'_percent',percent_size,baseline=True)
         else:
             # Three metric groups on a common baseline, with fixed column gaps.
-            freq_size=32
-            while freq_size>24 and p.measure(frequency,freq_size,True)+4+p.measure(frequency_unit,17)>94:
+            freq_size=30 if vram else 32
+            suffix_size=13 if vram else 17
+            while freq_size>(19 if vram else 24) and p.measure(frequency,freq_size,True)+4+p.measure(frequency_unit,suffix_size)>94:
                 freq_size-=1
-            p.text(20,top+82,frequency,freq_size,p.c['text'],True,'ls')
-            p.text(24+p.measure(frequency,freq_size,True),top+82,frequency_unit,17,p.c['muted'],anchor='ls')
+            freq_width=94-4-p.measure(frequency_unit,suffix_size)
+            p.fit(20,top+82,frequency,freq_width if vram else 100,freq_size,p.c['text'],True,'ls')
+            p.text(24+min(freq_width if vram else 100,p.measure(frequency,freq_size,True)),
+                   top+82,frequency_unit,suffix_size,p.c['muted'],anchor='ls')
             rpm_size=20 if len(rpm)>=5 else 22;rpm_unit=17
             unit_x=w-20-p.measure('rpm',rpm_unit)
             rpm_right=unit_x-5
@@ -379,16 +674,15 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
             temp_x=150-temp_width/2
             hardware_icon(p,temp_x,top+65,'temp',heat,18)
             p.text(temp_x+18,top+82,temperature,rpm_size,heat,True,'ls')
-            load=number(m.get(key+'_percent'))
-            percent_size=42 if load is not None and load>=100 else 58
             percent_right(top+52,key+'_percent',percent_size,baseline=True)
         p.bar(20,top+height-(7 if landscape else 12),w-40,m.get(key+'_percent'),color,4)
     if landscape:
-        hardware(39,'cpu',p.c['primary']);hardware(124,'gpu',p.c['secondary']);ry,rh=209,57
+        hardware(cpu_y,'cpu',p.c['primary']);hardware(gpu_y,'gpu',p.c['secondary']);ry,rh=ram_y,57
     else:
-        hardware(39,'cpu',p.c['primary']);hardware(152,'gpu',p.c['secondary']);ry,rh=265,102
-    surface(p,(8,ry,w-8,ry+rh),'ram')
-    hardware_badge(p,20,ry+9,'ram',p.c['memory'],28)
+        hardware(cpu_y,'cpu',p.c['primary']);hardware(gpu_y,'gpu',p.c['secondary']);ry,rh=ram_y,102
+    if not borderless:
+        surface(p,(8,ry,w-8,ry+rh),'ram')
+        hardware_badge(p,20,ry+9,'ram',p.c['memory'],28)
     ram_type=m.get('ram_type') or 'ОЗУ';mt=number(m.get('ram_speed_mt'))
     installed=number(m.get('ram_installed_gb'))
     capacity=value(installed if installed is not None else m.get('ram_total_gb'))
@@ -398,15 +692,21 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
         ram_temp=None
     memory_label=f"{capacity} ГБ {ram_type}"+(f" {mt:.0f} МГц" if mt else '')
     label_size=21
-    while label_size>16 and p.measure(memory_label,label_size,True)>w-78:label_size-=1
+    label_x=20 if borderless else 58
+    label_width=w-label_x-20
+    while label_size>16 and p.measure(memory_label,label_size,True)>label_width:label_size-=1
     if landscape:
-        label_size=min(label_size,14)
-        p.fit(58,ry+14,memory_label,250,label_size,p.c['text'],True,'lm')
+        label_size=min(label_size,17 if borderless else 14)
+        p.fit(label_x,ry+14,memory_label,250,label_size,p.c['text'],True,'lm')
     else:
-        p.fit(58,ry+23,memory_label,w-78,label_size,p.c['text'],True,'lm')
+        p.fit(label_x,ry+23,memory_label,label_width,label_size,p.c['text'],True,'lm')
     memory_baseline=ry+(50 if landscape else 79)
     used_size=24 if landscape else 32
     used_x=58 if landscape else 20
+    if borderless and not landscape and ram_temp is not None:
+        available = w-20-percent_width('ram_percent',32)-used_x-39-p.measure('ГБ',17)-p.measure(value(ram_temp,'°'),22,True)
+        while used_size > 21 and p.measure(used,used_size,True)>available:
+            used_size-=1
     p.text(used_x,memory_baseline,used,used_size,p.c['text'],True,'ls')
     used_unit_size=15 if landscape else 17
     used_unit_x=used_x+4+p.measure(used,used_size,True)
@@ -429,8 +729,9 @@ def overview(p,m,weather,landscape,overview_content=None,animation=None):
     percent_right(memory_baseline,'ram_percent',32,baseline=True)
     p.bar(20,ry+rh-(5 if landscape else 12),w-40,m.get('ram_percent'),p.c['memory'],4)
     card_box=(8,274,w-8,312) if landscape else (8,375,w-8,472)
-    if not overview_content_card(p,overview_content,card_box,landscape):
-        weather_card(p,weather,card_box,landscape,animation)
+    full_footer=(0,footer_y,w,p.h) if borderless else None
+    if not overview_content_card(p,overview_content,card_box,landscape,surface_box=full_footer):
+        weather_card(p,weather,card_box,landscape,animation,surface_box=full_footer)
 
 
 def compact_weather_description(description):
@@ -442,43 +743,75 @@ def compact_weather_description(description):
     return text[:1].upper()+text[1:]
 
 
-def weather_card(p,weather,box,landscape,animation=None):
-    original_colors=p.c
-    p.c=dict(THEMES['night'],cloud='#DBEBFA',primary='#82DEFF')
-    x,y,x2,y2=box;cw,ch=x2-x,y2-y
-    # A restrained sky gradient gives the live weather its own visual identity.
-    card=Image.new('RGB',(round(cw*2),round(ch*2)));d=ImageDraw.Draw(card)
-    day=weather.get('is_day',True);top=(29,82,117) if day else (32,48,89);bottom=(20,46,72) if day else (19,29,57)
-    for row in range(card.height):
-        t=row/max(1,card.height-1)
-        d.line((0,row,card.width,row),fill=tuple(round(a*(1-t)+b*t) for a,b in zip(top,bottom)))
-    mask=Image.new('L',card.size);ImageDraw.Draw(mask).rounded_rectangle((0,0,card.width-1,card.height-1),radius=24,fill=255)
-    p.im.paste(card,(round(x*2),round(y*2)),mask)
-    temp=value(weather.get('temperature'),'°');city=weather.get('city') or 'Погода'
-    if landscape:
-        p.text(x+10,y+3,temp,32,p.c['text'],True)
-        p.weather_icon(x+75,y+1,weather.get('weather_code'),36,day,phase=animation)
-        p.fit(x+120,y+10,city,155,18,p.c['text'],True)
-        p.text(x2-10,y+11,'Кэш погоды' if weather.get('stale') else f"Ветер {value(weather.get('wind_kmh'))} км/ч",16,p.c['text'],anchor='rt')
-    else:
-        p.fit(x+12,y+10,city,190,19,p.c['text'],True)
-        p.text(x+12,y+35,temp,44,p.c['text'],True)
-        p.weather_icon(x2-76,y+8,weather.get('weather_code'),66,day,phase=animation)
-        description=compact_weather_description(weather.get('description'))
-        lines=[];line=''
-        for word in description.split():
-            candidate=(line+' '+word).strip()
-            if line and p.measure(candidate,16)>110:lines.append(line);line=word
-            else:line=candidate
-        if line:lines.append(line)
-        # Original morning composition, only the leading is reduced: 18 vs 22 px.
-        for i,line in enumerate(lines[:2]):
-            if i==1 and len(lines)>2:line+='…'
-            p.fit(x+108,y+36+i*18,line,110,16,p.c['text'])
-        p.text(x+12,y+77,f"По ощущениям {value(weather.get('feels_like'),'°')}",16,p.c['muted'])
-        p.text(x2-12,y+77,'Кэш' if weather.get('stale') else f"{value(weather.get('wind_kmh'))} км/ч",16,p.c['muted'],anchor='rt')
+def _weather_reading(p, x, y, temp, width, size, color):
+    degree_size = round(size * .59)
+    degree_width = p.measure('°', degree_size) + 1 if temp != '—' else 0
+    while size > 21 and p.measure(temp, size) + degree_width > width:
+        size -= 1
+    p.fit(x, y, temp, width - degree_width, size, color)
+    if degree_width:
+        p.text(x + min(width - degree_width, p.measure(temp, size)) + 1,
+               y + 1, '°', degree_size, color)
 
-    p.c=original_colors
+
+def weather_card(p, weather, box, landscape, animation=None, *, surface_box=None):
+    x, y, x2, y2 = box
+    sx,sy,sx2,sy2=surface_box or box
+    w, h = round((sx2-sx)*2), round((sy2-sy)*2)
+    code = number(weather.get('weather_code'))
+    kind = sky_kind(int(code) if code is not None else None)
+    day = weather.get('is_day') is not False
+    temp = value(weather.get('temperature'))
+    city = weather.get('city') or 'Погода'
+    description = compact_weather_description(weather.get('description'))
+    if surface_box is not None:
+        cached = overview_weather_surface(w, h, kind, day, p.theme in LUMINOUS_DAY_THEMES)
+        mask = None
+    else:
+        cached, mask = card_surface(w, h, kind, day, landscape)
+    card = cached.copy()
+    # A compact panorama on the right, composed separately from the text.
+    scene_w, scene_h = (112, 72) if landscape else ((234, 171) if kind == 'fog' else (270, 171))
+    scene = draw_scene(kind, day, number(animation), scene_w, scene_h)
+    if scene is not None:
+        margin = (5 if landscape else (12 if kind == 'fog' else 1)) + round((sx2-x2)*2)
+        card.paste(scene, (w - scene_w - margin, (h - scene_h) // 2), scene)
+    p.im.paste(card, (round(sx*2), round(sy*2)), mask)
+
+    white, soft = (p.c['text'], p.c['muted']) if surface_box is not None and p.theme in LUMINOUS_DAY_THEMES else ('#FAFCFF', '#CFDEEF')
+    feels = value(weather.get('feels_like'), '°')
+    wind = value(weather.get('wind_kmh'), ' км/ч')
+    stale = weather.get('stale') and (temp != '—' or kind != 'unknown')
+    if landscape:
+        _weather_reading(p, x + 13, y + 7, temp, 79, 30, white)
+        p.fit(x + 100, y + 3, city, 176, 16, white, True)
+        p.fit(x + 100, y + 21, description, 176, 13, soft)
+        detail_x = x2 - 66
+        p.line([(x + 284, y + 8), (x + 284, y2 - 8)], '#54718B')
+        if feels != '—':
+            p.fit(detail_x, y + 5, f'Ощущ. {feels}', 108, 13, white, anchor='rt')
+        if stale or wind != '—':
+            p.fit(detail_x, y + 21 if feels != '—' else y + 12,
+                  'Кэш прогноза' if stale else f'Ветер {wind}', 108, 13, soft, anchor='rt')
+    else:
+        left = x+14
+        p.fit(left, y + 10, city, 164, 18, white, True)
+        _weather_reading(p, left, y + 33, temp, 92, 47, white)
+        p.wrap(x + 112, y + (40 if p.measure(description, 14) <= 88 else 30),
+               description, 88, 14, 2, white)
+        if feels != '—':
+            p.fit(left, y2-19, f'Ощущается {feels}', 116, 13, soft)
+        if stale or wind != '—':
+            p.fit(x+138 if feels != '—' else left, y2-19,
+                  'Кэш прогноза' if stale else wind, 88, 13, soft)
+
+
+@lru_cache(maxsize=24)
+def overview_weather_surface(w, h, kind, day, light=False):
+    if light:
+        return sky_panorama(w, h, kind, day, 0, False, light=True)
+    return ImageChops.lighter(sky_panorama(w, h, kind, day, 0, False),
+                              overview_strip(w//2, h//2, 'weather'))
 
 def graph_page(p,m,history,thermal,landscape):
     """Show only the CPU/GPU telemetry streams that actually feed this page."""
@@ -573,9 +906,10 @@ def _draw_month(p, box, now):
     width = (x2 - x - 20) / 7
     left = x + 10
     row_h = (y2 - grid_top - 8) / 7
+    weekday_size, day_size = (14, 17) if p.theme in LUMINOUS_THEMES else (13, 15)
     for index, weekday in enumerate(_WEEKDAYS_RU):
         p.text(left + width * (index + .5), grid_top + 2, weekday,
-               13, p.c['muted'], True, 'mt')
+               weekday_size, p.c['muted'], True, 'mt')
     month_dates = calendar.Calendar(firstweekday=0).monthdatescalendar(now.year, now.month)
     # Keep a stable six-row grid so every month fits the same well-balanced card.
     dates = [day for week in month_dates for day in week]
@@ -592,10 +926,10 @@ def _draw_month(p, box, now):
             radius = min(12, row_h * .43)
             p.rect((cx - radius, cy - radius, cx + radius, cy + radius),
                    p.c['primary'], radius)
-            color = '#FFFFFF'
+            color = '#112334' if p.theme in LUMINOUS_THEMES and p.theme not in DAY_THEMES else '#FFFFFF'
         else:
             color = p.c['text'] if day.month == now.month else p.c['muted']
-        p.text(cx, cy, day.day, 15, color, day == now.date(), 'mm')
+        p.text(cx, cy, day.day, day_size, color, day == now.date(), 'mm')
 
 
 def clock_page(p,m,now,landscape):
@@ -625,7 +959,7 @@ def _duration_label(seconds):
     return f'{whole // 60}:{whole % 60:02d}'
 
 
-def _media_progress(media):
+def _media_progress(media, *, remaining=False):
     position = number(media.get('position_seconds'))
     duration = number(media.get('duration_seconds'))
     if position is None or duration is None or duration <= 0:
@@ -634,7 +968,9 @@ def _media_progress(media):
     if media.get('is_playing') is True and sampled_at is not None:
         position += max(0.0, min(15.0, time.monotonic() - sampled_at))
     position = min(max(0.0, position), duration)
-    return position / duration * 100, _duration_label(position), _duration_label(duration)
+    end = '−'+_duration_label(duration-position) if remaining and position < duration else (
+        '0:00' if remaining else _duration_label(duration))
+    return position / duration * 100, _duration_label(position), end
 
 
 def _media_cover(p,media,box):
@@ -652,10 +988,11 @@ def _media_cover(p,media,box):
     else:
         p.rect(box, radius=18)
         center_x, center_y = (x+x2)/2, (y+y2)/2
+        scale = min(1, size/125)
         for i,hh in enumerate((28,54,82,62,38)):
-            xx=center_x-48+i*20
-            p.rect((xx,center_y-hh/2,xx+9,center_y+hh/2),
-                   p.c['primary'] if i%2 else p.c['secondary'],5)
+            xx=center_x+(-48+i*20)*scale
+            p.rect((xx,center_y-hh/2*scale,xx+9*scale,center_y+hh/2*scale),
+                   p.c['primary'] if i%2 else p.c['secondary'],5*scale)
 
 
 def media_page(p,media,landscape):
@@ -664,8 +1001,8 @@ def media_page(p,media,landscape):
     status=('ИГРАЕТ' if media.get('is_playing') is True else
             'ПАУЗА' if media.get('is_playing') is False else 'ТРЕК') if has_title else 'НЕТ ТРЕКА'
     status_color=p.c['memory'] if media.get('is_playing') is True else p.c['primary']
-    pill_fill=('#204A45' if p.theme=='night' else '#E5F5EE') if media.get('is_playing') is True else (
-        '#323B58' if p.theme=='night' else '#E8EDF8')
+    pill_fill=('#204A45' if p.theme not in DAY_THEMES else '#E5F5EE') if media.get('is_playing') is True else (
+        '#323B58' if p.theme not in DAY_THEMES else '#E8EDF8')
     progress=_media_progress(media) if has_title else None
     if landscape:
         cover=(20,60,218,258)
@@ -816,12 +1153,16 @@ def gaming_page(p,m,landscape):
                        color,True,'rt')
 
 
-def overview_content_card(p,content,box,landscape):
+def overview_content_card(p,content,box,landscape,*,surface_box=None):
     """Render the optional live game/music tile without disturbing overview geometry."""
     if not isinstance(content,dict) or content.get('kind') not in ('gaming','media'):
         return False
     x,y,x2,y2=box
-    p.rect(box, '#203B5A' if p.theme=='night' else '#D9EAFB', radius=16)
+    if surface_box is not None:
+        sx,sy,sx2,sy2=surface_box
+        p.im.paste(overview_strip(sx2-sx,sy2-sy,'header',p.theme in LUMINOUS_DAY_THEMES),(2*sx,2*sy))
+    else:
+        p.rect(box, '#D9EAFB' if p.theme=='day' else '#203B5A', radius=16)
     kind=content.get('kind')
     if kind=='gaming':
         fps=value(content.get('fps'))
@@ -877,17 +1218,23 @@ def overview_content_card(p,content,box,landscape):
 def render(metrics,weather,history,page='overview',rotation=90,now=None,alert='',media=None,theme='night',brand_name='Мой компьютер',overview_content=None,animation=None):
     now=now or datetime.now();metrics=metrics if isinstance(metrics,dict) else {};weather=weather if isinstance(weather,dict) else {}
     history=history if isinstance(history,dict) else {};media=media if isinstance(media,dict) else {};landscape=rotation in (90,270)
-    p=Painter(480 if landscape else 320,320 if landscape else 480,theme);header(p,page,now,brand_name)
-    if page in ('clock','media') or (page=='gaming' and number(metrics.get('fps')) is not None):
-        p.rect((8,39,p.w-8,p.h-8),radius=20)
-    if page=='overview':overview(p,metrics,weather,landscape,overview_content=overview_content,animation=animation)
-    elif page in ('graphs','thermal'):graph_page(p,metrics,history,page=='thermal',landscape)
-    elif page=='weather':weather_page(p,weather,landscape)
-    elif page=='clock':clock_page(p,metrics,now,landscape)
-    elif page=='media':media_page(p,media,landscape)
-    elif page=='gaming':gaming_page(p,metrics,landscape)
-    else:overview(p,metrics,weather,landscape,animation=animation)
-    if alert:
+    p=Painter(480 if landscape else 320,320 if landscape else 480,theme)
+    if p.theme in LUMINOUS_THEMES:
+        from luminous import draw
+        draw(p, page, metrics, weather, history, now, media, brand_name,
+             landscape, overview_content, animation, alert)
+    else:
+        header(p,page,now,brand_name)
+        if page in ('clock','media') or (page=='gaming' and number(metrics.get('fps')) is not None):
+            p.rect((8,39,p.w-8,p.h-8),radius=20)
+        if page=='overview':overview(p,metrics,weather,landscape,overview_content=overview_content,animation=animation)
+        elif page in ('graphs','thermal'):graph_page(p,metrics,history,page=='thermal',landscape)
+        elif page=='weather':weather_page(p,weather,landscape)
+        elif page=='clock':clock_page(p,metrics,now,landscape)
+        elif page=='media':media_page(p,media,landscape)
+        elif page=='gaming':gaming_page(p,metrics,landscape)
+        else:overview(p,metrics,weather,landscape,animation=animation)
+    if alert and p.theme not in LUMINOUS_THEMES:
         p.rect((4,p.h-54,p.w-4,p.h-4),'#512330',10,RED)
         short=str(alert).replace(' — высокая температура','').replace('Процессор:','CPU').replace('Видеокарта:','GPU')
         p.wrap(14,p.h-47,short,p.w-28,18,2,'#FFF5F7',True)

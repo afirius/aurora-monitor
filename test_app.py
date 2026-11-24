@@ -27,7 +27,14 @@ class AppTests(unittest.TestCase):
         self.assertEqual(game_content["gpu_percent"], 71)
         self.assertEqual(select_overview_content({}, media), {
             "kind": "media", "title": "Night Drive", "artist": "Aurora",
-            "album": None, "thumbnail_bytes": b"album art"})
+            "album": None, "thumbnail_bytes": b"album art", "is_playing": True})
+
+    def test_playing_overview_keeps_track_timing_for_the_music_preview(self):
+        media = dict(title='Track', is_playing=True, position_seconds=15,
+                     duration_seconds=200, position_sampled_at=100)
+        content = select_overview_content({}, media)
+        self.assertEqual([content[k] for k in ('position_seconds','duration_seconds','position_sampled_at')],
+                         [15, 200, 100])
         self.assertIsNone(select_overview_content({}, {**media, "is_playing": False}))
         self.assertIsNone(select_overview_content({"fps": 60.0}, {}))
 
@@ -60,8 +67,9 @@ class AppTests(unittest.TestCase):
         app.last_media_sample = time.monotonic()
         app._current_metrics = Mock(return_value=({}, False))
         self.assertTrue(app._weather_animation_visible())
+        self.assertFalse(app._weather_animation_visible({"weather_code": 100}))
         app._weather_animation = True
-        self.assertEqual(app._tick_delay_ms(), 250)
+        self.assertEqual(app._tick_delay_ms(), 125)
         app.page = "weather"
         self.assertFalse(app._weather_animation_visible())
         app._weather_animation = False
@@ -162,7 +170,10 @@ class AppTests(unittest.TestCase):
 
     def test_automatic_theme_tracks_night_schedule_but_manual_modes_do_not(self):
         cfg=DEFAULTS.copy()
-        self.assertEqual(cfg['theme'],'auto')
+        self.assertEqual(cfg['theme'],'luminous')
+        self.assertEqual(effective_theme(cfg, 1), 'luminous')
+        self.assertEqual(effective_theme(cfg, 12), 'luminous_day')
+        cfg['theme']='auto'
         self.assertEqual(cfg['brightness'],100)
         for hour in (23,0,7):
             self.assertEqual(effective_theme(cfg,hour),'night')
@@ -174,6 +185,25 @@ class AppTests(unittest.TestCase):
         self.assertEqual(effective_theme(cfg,12),'night')
         cfg['theme']='auto';cfg['night_mode']=False
         self.assertEqual(effective_theme(cfg,1),'day')
+
+    def test_both_luminous_layouts_follow_schedule_independent_of_brightness(self):
+        for theme in ('luminous', 'luminous_classic'):
+            cfg = dict(DEFAULTS, theme=theme, night_mode=False, night_start=22, night_end=7)
+            for hour in (22, 0, 6):
+                self.assertEqual(effective_theme(cfg, hour), theme)
+                self.assertEqual(effective_brightness(cfg, hour), cfg['brightness'])
+            for hour in (7, 12, 21):
+                self.assertEqual(effective_theme(cfg, hour), theme+'_day')
+            cfg['luminous_mode'] = 'day'
+            self.assertEqual(effective_theme(cfg, 0), theme+'_day')
+            cfg['luminous_mode'] = 'night'
+            self.assertEqual(effective_theme(cfg, 12), theme)
+
+    def test_invalid_luminous_mode_recovers_to_auto(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'settings.json'
+            path.write_text('{"theme":"luminous","luminous_mode":[]}', encoding='utf-8')
+            self.assertEqual(load_settings(path)['luminous_mode'], 'auto')
 
     def test_tick_applies_scheduled_theme_transition(self):
         app=App.__new__(App)
@@ -208,13 +238,24 @@ class AppTests(unittest.TestCase):
             path=Path(tmp)/'settings.json'
             path.write_text('{"theme":"ember","brightness":77,"night_brightness":13,"night_mode":true,"brand_name":"  Мой   мощный\\n ПК  "}',encoding='utf-8')
             cfg=load_settings(path)
-        self.assertEqual(THEMES,{'auto':'Автоматически','day':'Дневная','night':'Ночная'})
+        self.assertEqual(THEMES,{'luminous':'Сияние','luminous_classic':'Сияние · погода снизу',
+                                 'auto':'Автоматически','day':'Дневная','night':'Ночная'})
         self.assertEqual(cfg['theme'],'night')
         self.assertEqual(cfg['brand_name'],'Мой мощный ПК')
         self.assertEqual(cfg['brightness'],77)
         self.assertEqual(cfg['night_brightness'],13)
         self.assertEqual(effective_brightness(cfg,1),13)
         self.assertEqual(effective_brightness(cfg,12),77)
+
+    def test_luminous_is_the_default_but_saved_themes_still_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'settings.json'
+            self.assertEqual(load_settings(path)['theme'], 'luminous')
+            for theme in ('luminous', 'luminous_classic', 'auto', 'day', 'night'):
+                path.write_text('{"theme":"'+theme+'","brightness":77}', encoding='utf-8')
+                cfg = load_settings(path)
+                self.assertEqual(cfg['theme'], theme)
+                self.assertEqual(cfg['brightness'], 77)
 
     def test_brand_name_normalization_limits_printable_text(self):
         self.assertEqual(normalize_brand_name('  АВТОР   ПК\t\n'), 'АВТОР ПК')

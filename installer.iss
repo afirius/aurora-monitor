@@ -2,7 +2,7 @@
 ; Сборка: build-installer.ps1 (Inno Setup 6)
 
 #define MyAppName "АВРОРА"
-#define MyAppVersion "0.4.2"
+#define MyAppVersion "0.5.20"
 #define MyAppPublisher "Aurora Monitor"
 #define MyAppURL "https://github.com/afirius/aurora-monitor"
 #define MyAppExeName "AuroraMonitor.exe"
@@ -37,7 +37,7 @@ CloseApplicationsFilter=AuroraMonitor.exe,UsbMonitor.exe
 RestartApplications=no
 SetupLogging=yes
 LicenseFile=LICENSE
-VersionInfoVersion=0.4.2.0
+VersionInfoVersion=0.5.20.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} — установщик
 VersionInfoProductName={#MyAppName}
